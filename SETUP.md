@@ -19,8 +19,8 @@
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_ORG/medvault.git
-cd medvault
+git clone https://github.com/aditya0si/pipeline_ocr.git
+cd pipeline_ocr
 ```
 
 ---

@@ -20,8 +20,8 @@ Built with FastAPI + React + TypeScript + SQLite.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/YOUR_ORG/medvault.git
-cd medvault
+git clone https://github.com/aditya0si/pipeline_ocr.git
+cd pipeline_ocr
 ```
 
 ### 2. Run the setup script
