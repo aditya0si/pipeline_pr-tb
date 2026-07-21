@@ -125,7 +125,7 @@ export function Settings({ onBack, notify }: Props) {
             {ocrProviders.length === 0 ? (
               <div className="provider-empty neu-inset">
                 <span>No OCR providers configured.</span>
-                <span className="provider-empty-hint">The MedVault Dual Pipeline (PaddleOCR + Qwen2.5-VL) is used by default.</span>
+                <span className="provider-empty-hint">The MedVault Dual Pipeline (PaddleOCR + Granite Vision) is used by default.</span>
               </div>
             ) : (
               <div className="provider-list">
@@ -216,7 +216,7 @@ export function Settings({ onBack, notify }: Props) {
 
 function ProviderCard({ provider, onEdit, onDelete }: { provider: api.Provider; onEdit: () => void; onDelete: () => void }) {
   const ENGINE_ICONS: Record<string, string> = {
-    auto: "🔀", paddleocr: "📝", qwen_vl: "👁",
+    auto: "🔀", paddleocr: "📝", granite: "📊",
     gemini: "✦", openai: "◐", ollama: "🦙", custom_openai: "🔌", pipeline: "🔄",
   };
   return (

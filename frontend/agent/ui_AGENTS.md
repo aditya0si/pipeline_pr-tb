@@ -48,7 +48,7 @@ Every exported function returns `{ data, error, status }`. Callers always check 
 
 ```javascript
 // api.js exports
-export async function uploadReport(file, patientId, isHandwritten) { ... }
+export async function uploadReport(file, patientId, docType) { ... }
 export async function getReport(reportId) { ... }
 export async function getPatientReports(patientId) { ... }
 export async function streamSummary(reportId, onChunk, onDone) { ... }  // SSE
@@ -67,7 +67,7 @@ The `streamSummary` function uses the browser `EventSource` API for SSE — do n
 
 ### Flows
 1. Patient selects one or more images → preview shown
-2. Patient checks "handwritten?" checkbox per image (or auto-detected)
+2. Patient selects doc type per image (printed / tabular)
 3. Patient submits → `uploadReport()` called per image → `202 Accepted` with `report_id`
 4. Each image card shows a status pill: `Uploading → Processing → Done / Error`
 5. Polling: `getReport(reportId)` every 2 seconds until `status === 'summary_done'` or `'error'`
@@ -77,7 +77,7 @@ The `streamSummary` function uses the browser `EventSource` API for SSE — do n
 ```javascript
 const PatientState = {
   patientId: null,           // set at page load from session/URL param
-  uploads: [],               // [{ reportId, file, status, isHandwritten }]
+  uploads: [],               // [{ reportId, file, status, docType }]
   pollingIntervals: {},      // { reportId: intervalId }
 };
 ```

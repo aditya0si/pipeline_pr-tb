@@ -1,7 +1,7 @@
 """
 gpu_manager.py — centralised GPU model preloading and status reporting.
 
-Keeps track of which heavy models (classifier CNN, PaddleOCR, Qwen-VL) have
+Keeps track of which heavy models (PaddleOCR, Granite Vision 4.1-4b) have
 been loaded onto the GPU, and provides a single ``preload_models()`` entry
 point called at server startup so the NVIDIA GPU is warm before the first
 request arrives (instead of lazy-loading on first OCR, which left the GPU
@@ -27,8 +27,8 @@ _preload_error: Optional[str] = None
 _paddle_loaded = False
 _paddle_error: Optional[str] = None
 _paddle_using_gpu = False
-_qwen_loaded = False
-_qwen_error: Optional[str] = None
+_granite_loaded = False
+_granite_error: Optional[str] = None
 
 # CUDA info
 _cuda_available = False
@@ -48,9 +48,8 @@ class GPUStatus:
     paddle_loaded: bool
     paddle_using_gpu: bool
     paddle_error: Optional[str]
-    qwen_loaded: bool
-    qwen_error: Optional[str]
-    qwen_using_microservice: bool
+    granite_loaded: bool
+    granite_error: Optional[str]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -85,25 +84,43 @@ def _preload_paddle() -> None:
         print(f"[GPU preload] PaddleOCR failed: {e}")
 
 
-def _preload_qwen() -> None:
-    """Eagerly load the Qwen2.5-VL model onto the GPU (4-bit).
+def _preload_granite() -> None:
+    """Eagerly load the Granite Vision 4.1-4b model onto the GPU (4-bit NF4).
 
-    This is the heaviest model (~3B params). Loading it at startup means the
-    first handwritten OCR request is fast and the GPU is warm. If it fails
-    (e.g. model not downloaded yet) we record the error but don't block
-    startup — the lazy path in ``qwen_vl_provider`` will retry on demand.
+    This is loaded at startup so the first tabular OCR request is fast and the
+    GPU is warm. If it fails (e.g. model not downloaded yet) we record the
+    error but don't block startup — the lazy path in ``granite_provider``
+    will retry on demand.
     """
-    global _qwen_loaded, _qwen_error
+    global _granite_loaded, _granite_error
     try:
-        from backend.ocr.providers.qwen_provider import QwenVLProvider, _get_model
+        from backend.ocr.providers.granite_provider import _get_model
         import torch
-        dtype = torch.bfloat16
-        _get_model("Qwen/Qwen2.5-VL-3B-Instruct", "cuda", dtype, load_in_4bit=True)
-        _qwen_loaded = True
-        print("[GPU preload] Qwen2.5-VL loaded on cuda (4-bit)")
+        dtype = torch.float16
+        _get_model("ibm-granite/granite-vision-4.1-4b", "cuda", dtype, load_in_4bit=True)
+        _granite_loaded = True
+        print("[GPU preload] Granite Vision 4.1-4b loaded on cuda (4-bit NF4)")
     except Exception as e:
-        _qwen_error = str(e)
-        print(f"[GPU preload] Qwen2.5-VL failed (will lazy-load on first request): {e}")
+        _granite_error = str(e)
+        print(f"[GPU preload] Granite Vision failed (will lazy-load on first request): {e}")
+
+
+def wait_for_granite_ready(max_wait_seconds: int = 60) -> bool:
+    """Wait up to max_wait_seconds for Granite Vision background preloading to complete."""
+    import time
+    global _granite_loaded, _preload_started, _preload_done
+    if _granite_loaded:
+        return True
+    
+    start = time.time()
+    while time.time() - start < max_wait_seconds:
+        if _granite_loaded:
+            return True
+        if _preload_done and not _granite_loaded:
+            # Preload finished but granite failed
+            break
+        time.sleep(0.5)
+    return _granite_loaded
 
 
 def preload_models(blocking: bool = True) -> None:
@@ -125,13 +142,9 @@ def preload_models(blocking: bool = True) -> None:
         global _preload_done, _preload_error
         try:
             _detect_cuda()
+            # Load heavy Granite VLM first on clean VRAM before Paddle
+            _preload_granite()
             _preload_paddle()
-            # Only load Qwen in-process when no microservice is configured.
-            # When QWEN_VL_SERVER_URL is set, handwritten OCR routes to the
-            # separate qwen_vl_server.py process — we must NOT load it here
-            # (two GPU models in one process = OOM on any laptop GPU).
-            if not os.environ.get("QWEN_VL_SERVER_URL"):
-                _preload_qwen()
         except Exception as e:
             _preload_error = str(e)
         finally:
@@ -158,7 +171,6 @@ def gpu_status() -> GPUStatus:
         paddle_loaded=_paddle_loaded,
         paddle_using_gpu=_paddle_using_gpu,
         paddle_error=_paddle_error,
-        qwen_loaded=_qwen_loaded,
-        qwen_error=_qwen_error,
-        qwen_using_microservice=bool(os.environ.get("QWEN_VL_SERVER_URL")),
+        granite_loaded=_granite_loaded,
+        granite_error=_granite_error,
     )

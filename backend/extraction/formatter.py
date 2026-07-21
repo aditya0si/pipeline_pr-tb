@@ -22,7 +22,7 @@ def format_with_llm(raw_ocr_text: str, doc_class: str) -> Dict[str, Any]:
 
     Args:
         raw_ocr_text: Raw text from OCR engine.
-        doc_class: Document class (TABLE / HANDWRITTEN / PRINTED_TEXT).
+        doc_class: Document class (TABLE / PRINTED_TEXT).
 
     Returns:
         {

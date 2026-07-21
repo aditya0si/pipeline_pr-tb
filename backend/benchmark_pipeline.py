@@ -1,13 +1,13 @@
 """
-benchmark_pipeline.py — Classify -> OCR timing benchmark for pipeline_v1.
+benchmark_pipeline.py — OCR timing benchmark for pipeline_v1.
 
 Measures the real pipeline flow on the Patient_Kastoor and WhatsApp datasets:
-  1. preprocess + classify (printed / handwritten)
-  2. OCR: printed -> PaddleOCR (GPU), handwritten -> Qwen2.5-VL (GPU)
+  1. preprocess + route (printed / tabular, user-selected doc_type)
+  2. OCR: printed -> PaddleOCR (GPU), tabular -> Granite Vision (GPU)
 
 Paddle and torch CUDA DLLs clash in one process (Hard Rule #2), so the OCR
 stages run in SEPARATE subprocesses (one for Paddle, one for torch). The
-classify stage is CPU-only and runs on its own.
+doc_type is read from a pre-populated ``predictions.json`` (no ML classifier).
 
 Run:
   venv\\Scripts\\python.exe pipeline_v1\\backend\\benchmark_pipeline.py run-all
@@ -31,7 +31,7 @@ VALID_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 PRED_FILE = BACKEND / "predictions.json"
 OCR_PRINTED_FILE = BACKEND / "ocr_printed.json"
-OCR_HW_FILE = BACKEND / "ocr_handwritten.json"
+OCR_TABLE_FILE = BACKEND / "ocr_table.json"
 RESULTS_FILE = BACKEND / "benchmark_results.json"
 
 
@@ -122,29 +122,28 @@ def stage_ocr_printed():
     print(f"[ocr-printed] wrote {OCR_PRINTED_FILE} ({len(results)} images)")
 
 
-def stage_ocr_handwritten():
+def stage_ocr_table():
     sys.path.insert(0, str(BACKEND))
-    from backend.ocr.providers.qwen_provider import QwenVLProvider
+    from backend.ocr.providers.granite_provider import GraniteVisionProvider
 
-    server_url = os.environ.get("QWEN_VL_SERVER_URL", "")
-    print(f"[ocr-handwritten] server_url={server_url or '(in-process)'}")
+    print("[ocr-table] Granite Vision (in-process)")
     preds = json.loads(PRED_FILE.read_text(encoding="utf-8"))
-    hw = [k for k, v in preds["predictions"].items() if v.get("doc_type") == "handwritten"]
+    tbl = [k for k, v in preds["predictions"].items() if v.get("doc_type") == "tabular"]
 
     results = []
     provider = None
     try:
-        provider = QwenVLProvider(server_url=server_url)
+        provider = GraniteVisionProvider()
     except Exception as e:
-        print(f"[ocr-handwritten] model unavailable: {e}")
-        for rel in hw:
+        print(f"[ocr-table] model unavailable: {e}")
+        for rel in tbl:
             results.append({"path": rel, "status": "skipped", "error": f"model unavailable: {e}"})
-        OCR_HW_FILE.write_text(json.dumps(results, indent=2), encoding="utf-8")
-        print(f"[ocr-handwritten] wrote {OCR_HW_FILE} (skipped)")
+        OCR_TABLE_FILE.write_text(json.dumps(results, indent=2), encoding="utf-8")
+        print(f"[ocr-table] wrote {OCR_TABLE_FILE} (skipped)")
         return
 
     warmed = False
-    for rel in hw:
+    for rel in tbl:
         p = _repo_root() / rel
         if not p.exists():
             results.append({"path": rel, "status": "error", "error": "missing file"})
@@ -162,17 +161,17 @@ def stage_ocr_handwritten():
             results.append({"path": rel, "status": "error", "error": str(e)})
         print(f"  {rel} -> {results[-1].get('ocr_seconds', 'ERR')}s chars={results[-1].get('text_length', '?')}")
 
-    OCR_HW_FILE.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(f"[ocr-handwritten] wrote {OCR_HW_FILE} ({len(results)} images)")
+    OCR_TABLE_FILE.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"[ocr-table] wrote {OCR_TABLE_FILE} ({len(results)} images)")
 
 
 def stage_report():
     preds = json.loads(PRED_FILE.read_text(encoding="utf-8")) if PRED_FILE.exists() else {"mode": "?", "predictions": {}}
     printed_ocr = json.loads(OCR_PRINTED_FILE.read_text(encoding="utf-8")) if OCR_PRINTED_FILE.exists() else []
-    hw_ocr = json.loads(OCR_HW_FILE.read_text(encoding="utf-8")) if OCR_HW_FILE.exists() else []
+    tbl_ocr = json.loads(OCR_TABLE_FILE.read_text(encoding="utf-8")) if OCR_TABLE_FILE.exists() else []
 
     printed_map = {r["path"]: r for r in printed_ocr}
-    hw_map = {r["path"]: r for r in hw_ocr}
+    tbl_map = {r["path"]: r for r in tbl_ocr}
 
     per_image = []
     for rel, meta in preds["predictions"].items():
@@ -181,7 +180,7 @@ def stage_report():
             "doc_type": meta.get("doc_type"),
             "classify_seconds": meta.get("classify_seconds"),
         }
-        ocr = printed_map.get(rel) or hw_map.get(rel)
+        ocr = printed_map.get(rel) or tbl_map.get(rel)
         if ocr:
             rec["ocr_seconds"] = ocr.get("ocr_seconds")
             rec["status"] = ocr.get("status")
@@ -195,21 +194,21 @@ def stage_report():
 
     classify_times = [r["classify_seconds"] for r in per_image if r.get("classify_seconds") is not None]
     printed_times = [r["ocr_seconds"] for r in per_image if r.get("doc_type") == "printed" and r.get("ocr_seconds") is not None]
-    hw_times = [r["ocr_seconds"] for r in per_image if r.get("doc_type") == "handwritten" and r.get("ocr_seconds") is not None]
+    tbl_times = [r["ocr_seconds"] for r in per_image if r.get("doc_type") == "tabular" and r.get("ocr_seconds") is not None]
     total_times = [r["total_seconds"] for r in per_image if r.get("total_seconds") is not None]
     printed_confs = [r["avg_confidence"] for r in per_image if r.get("avg_confidence")]
 
     n_printed = sum(1 for r in per_image if r.get("doc_type") == "printed")
-    n_hw = sum(1 for r in per_image if r.get("doc_type") == "handwritten")
+    n_tbl = sum(1 for r in per_image if r.get("doc_type") == "tabular")
 
     summary = {
         "classification_mode": preds.get("mode"),
         "total_images": len(per_image),
         "printed": n_printed,
-        "handwritten": n_hw,
+        "tabular": n_tbl,
         "classify_seconds": _stats(classify_times),
         "ocr_printed_seconds": _stats(printed_times),
-        "ocr_handwritten_seconds": _stats(hw_times),
+        "ocr_table_seconds": _stats(tbl_times),
         "total_seconds": _stats(total_times),
         "printed_avg_confidence": round(statistics.mean(printed_confs), 4) if printed_confs else 0.0,
     }
@@ -224,10 +223,10 @@ def stage_report():
 
     print("\n==================== BENCHMARK SUMMARY ====================")
     print(f"Classification mode : {summary['classification_mode']}")
-    print(f"Images              : {summary['total_images']} (printed={n_printed}, handwritten={n_hw})")
+    print(f"Images              : {summary['total_images']} (printed={n_printed}, tabular={n_tbl})")
     print(f"Classify (s)        : {summary['classify_seconds']}")
     print(f"OCR printed (s)     : {summary['ocr_printed_seconds']}")
-    print(f"OCR handwritten (s) : {summary['ocr_handwritten_seconds']}")
+    print(f"OCR tabular (s)     : {summary['ocr_table_seconds']}")
     print(f"Total/image (s)     : {summary['total_seconds']}")
     print(f"Printed avg conf    : {summary['printed_avg_confidence']}")
     print(f"Results saved to    : {RESULTS_FILE}")
@@ -245,18 +244,18 @@ def run_all():
     script = str(__file__)
     print(f"[run-all] using python: {py}")
     subprocess.run([py, script, "ocr-printed"], check=True)
-    subprocess.run([py, script, "ocr-handwritten"], check=True)
+    subprocess.run([py, script, "ocr-table"], check=True)
     subprocess.run([py, script, "report"], check=True)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["ocr-printed", "ocr-handwritten", "report", "run-all"])
+    ap.add_argument("mode", choices=["ocr-printed", "ocr-table", "report", "run-all"])
     args = ap.parse_args()
     if args.mode == "ocr-printed":
         stage_ocr_printed()
-    elif args.mode == "ocr-handwritten":
-        stage_ocr_handwritten()
+    elif args.mode == "ocr-table":
+        stage_ocr_table()
     elif args.mode == "report":
         stage_report()
     elif args.mode == "run-all":

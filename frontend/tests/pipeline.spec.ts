@@ -1,19 +1,28 @@
 import { test, expect } from '@playwright/test';
 import * as path from 'path';
+import * as fs from 'fs';
 
 test.describe('MedVault OCR Pipeline E2E', () => {
+
+  // Helper to load sample image
+  const getSampleBuffer = () => {
+    const samplePath = path.resolve(process.cwd(), '../uploads/34882d6c-4947-4ad8-add3-ade7b1529d24.jpeg');
+    if (fs.existsSync(samplePath)) {
+      return fs.readFileSync(samplePath);
+    }
+    return Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64'
+    );
+  };
 
   // T1 — Patient Portal: Upload Flow
   test('T1: Patient Portal - Upload Flow', async ({ page }) => {
     await page.goto('/');
     await page.locator('.hero-card').filter({ hasText: 'Patient Portal' }).click();
-    await expect(page.locator('h2').filter({ hasText: 'My Reports' })).toBeVisible();
+    await expect(page.locator('h1').filter({ hasText: 'My Reports' })).toBeVisible();
 
-    // Create a dummy image for upload
-    const buffer = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-      'base64'
-    );
+    const buffer = getSampleBuffer();
     
     // Setup request interception to mock the upload so we don't spam the real backend in E2E tests,
     // OR we can actually do a real upload if the backend is running.
@@ -21,7 +30,7 @@ test.describe('MedVault OCR Pipeline E2E', () => {
     
     // Listen for the file chooser
     const fileChooserPromise = page.waitForEvent('filechooser');
-    await page.locator('button').filter({ hasText: 'Upload Report' }).click();
+    await page.locator('.upload-zone').click();
     const fileChooser = await fileChooserPromise;
     
     await fileChooser.setFiles({
@@ -30,20 +39,21 @@ test.describe('MedVault OCR Pipeline E2E', () => {
       buffer
     });
 
+    // Select the document type
+    await page.locator('button').filter({ hasText: 'Printed' }).click();
+
     // It should upload and display a new report card with "Uploaded" status
     // Wait for the report card to appear
     const reportCard = page.locator('.report-card').first();
     await expect(reportCard).toBeVisible();
-    await expect(reportCard.locator('.status-badge')).toHaveText('Uploaded');
-    // Ensure it's not "Awaiting Analysis"
-    await expect(reportCard.locator('.status-badge')).not.toHaveText('Awaiting Analysis');
+    await expect(reportCard.locator('.tag.uploaded')).toBeVisible();
   });
 
   // T2 — Doctor Portal: Patient List Loads
   test('T2: Doctor Portal - Patient List Loads', async ({ page }) => {
     await page.goto('/');
     await page.locator('.hero-card').filter({ hasText: 'Doctor Portal' }).click();
-    await expect(page.locator('h2').filter({ hasText: 'Patients' })).toBeVisible();
+    await expect(page.locator('h1').filter({ hasText: 'Doctor Dashboard' })).toBeVisible();
     
     // Wait for patient list to load
     const patientRow = page.locator('.patient-row').first();
@@ -67,11 +77,11 @@ test.describe('MedVault OCR Pipeline E2E', () => {
     await patientRow.click();
     
     // The report detail view should load
-    const detailPanel = page.locator('.patient-detail');
+    const detailPanel = page.locator('.report-list');
     await expect(detailPanel).toBeVisible();
     
     // Check that at least one report card is visible with Run Pipeline button
-    const docCard = page.locator('.doc-card').first();
+    const docCard = page.locator('.report-card').first();
     await expect(docCard).toBeVisible();
     await expect(docCard.locator('button', { hasText: 'Open File' })).toBeVisible();
     await expect(docCard.locator('button', { hasText: 'Run Pipeline' })).toBeVisible();
@@ -87,14 +97,14 @@ test.describe('MedVault OCR Pipeline E2E', () => {
     await page.locator('.patient-row').first().click();
     
     // Click Run Pipeline on the first report
-    const docCard = page.locator('.doc-card').first();
+    const docCard = page.locator('.report-card').first();
     const runBtn = docCard.locator('button', { hasText: 'Run Pipeline' });
     await expect(runBtn).toBeVisible();
     await runBtn.click();
     
-    // Wait for the pipeline accordion to appear
+    // Wait for the pipeline accordion to appear (OCR pipeline can take up to 45-60s)
     const accordion = page.locator('.pipeline-accordion');
-    await expect(accordion).toBeVisible();
+    await expect(accordion).toBeVisible({ timeout: 60000 });
     
     // T6 — GPU Status Panel: No Red Errors (Checked here while we are in the Doctor portal)
     const gpuPanel = page.locator('.gpu-status-panel');
@@ -110,12 +120,8 @@ test.describe('MedVault OCR Pipeline E2E', () => {
     await expect(lastStageDot).toHaveText('✓', { timeout: 45000 });
     
     // Check that panels are populated
-    // Classification panel
-    const classPanel = accordion.locator('.acc-panel').nth(0);
-    await expect(classPanel).not.toContainText('No classification result.');
-    
-    // OCR panel
-    const ocrPanel = accordion.locator('.acc-panel').nth(1);
+    // OCR panel (now panel 0 after classification removal)
+    const ocrPanel = accordion.locator('.acc-panel').nth(0);
     await expect(ocrPanel).not.toContainText('No OCR text was produced');
     
     // Check that lab results or diagnosis is visible (depends on the document)
@@ -124,11 +130,7 @@ test.describe('MedVault OCR Pipeline E2E', () => {
 
   // T5 — API Contract Test: pipeline/run shape
   test('T5: API Contract - pipeline/run shape', async ({ request }) => {
-    // Create a dummy image
-    const buffer = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-      'base64'
-    );
+    const buffer = getSampleBuffer();
     
     const response = await request.post('/api/pipeline/run', {
       multipart: {
@@ -146,7 +148,6 @@ test.describe('MedVault OCR Pipeline E2E', () => {
     
     // Verify the nested shape
     expect(data).toHaveProperty('preprocessing');
-    expect(data).toHaveProperty('classification');
     expect(data).toHaveProperty('ocr');
     expect(data).toHaveProperty('lab_report');
     expect(data).toHaveProperty('diagnosis');

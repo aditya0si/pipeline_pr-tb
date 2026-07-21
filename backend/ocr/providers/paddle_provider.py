@@ -10,7 +10,6 @@ and additionally exposes structured extraction (test name / value / reference
 range) via heuristics.
 
 Designed for PRINTED reports (clean scans / photos of printed lab sheets).
-For handwritten reports, a different engine should be used.
 """
 from __future__ import annotations
 

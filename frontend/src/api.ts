@@ -55,9 +55,8 @@ export interface GpuStatus {
   paddle_loaded: boolean;
   paddle_using_gpu: boolean;
   paddle_error: string | null;
-  qwen_loaded: boolean;
-  qwen_error: string | null;
-  qwen_using_microservice?: boolean;
+  granite_loaded: boolean;
+  granite_error: string | null;
 }
 export const gpuStatus = () => request<GpuStatus>("/gpu/status");
 export const gpuPreload = () =>
@@ -82,19 +81,58 @@ export const analyzeReport = (reportId: string, opts: { apiKey?: string; aiProvi
 export const runPipeline = async (
   fileBlob: Blob,
   filename: string,
-  opts: { summary?: boolean; evaluate?: boolean; reportId?: string } = {}
+  opts: { summary?: boolean; evaluate?: boolean; reportId?: string; docType?: string } = {}
 ) => {
   const fd = new FormData();
   fd.append("file", fileBlob, filename);
   if (opts.summary) fd.append("summary", "true");
   if (opts.evaluate) fd.append("evaluate", "true");
   if (opts.reportId) fd.append("report_id", opts.reportId);
-  return request<PipelineResult>("/pipeline/run", { method: "POST", body: fd });
+  if (opts.docType) fd.append("doc_type", opts.docType);
+  
+  // Submit job (returns HTTP 202 {"job_id": "<uuid>", "status": "pending"})
+  let jobRes: { job_id: string; status: string; message?: string };
+  try {
+    jobRes = await request<{ job_id: string; status: string }>("/pipeline/run", { method: "POST", body: fd });
+  } catch (e: any) {
+    if (e.message === "Failed to fetch" || e.message === "Load failed") {
+      throw new Error("Connection lost during pipeline request. Please verify backend server is running on port 3002.");
+    }
+    throw e;
+  }
+
+  const jobId = jobRes.job_id;
+  const maxAttempts = 300; // 300 attempts * 2s = 600s (10 minutes max polling)
+  
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const statusRes = await request<{
+        job_id: string;
+        status: "pending" | "running" | "done" | "failed";
+        result?: PipelineResult;
+        error?: string;
+      }>(`/pipeline/run/status/${jobId}`);
+
+      if (statusRes.status === "done" && statusRes.result) {
+        return statusRes.result;
+      }
+      if (statusRes.status === "failed") {
+        throw new Error(statusRes.error || "Pipeline execution failed.");
+      }
+    } catch (e: any) {
+      if (e.message?.includes("failed") || e.message?.includes("Failed")) {
+        throw e;
+      }
+      // Transient polling network errors — continue loop until maxAttempts
+    }
+  }
+
+  throw new Error("Pipeline execution timed out (10m limit). Please check backend logs or try again.");
 };
 
 export interface PipelineResult {
   preprocessing: { transformations_applied: string[]; quality_metrics_before: any; quality_metrics_after?: any } | null;
-  classification: { class: string; confidence: number; fallback_triggered: boolean } | null;
   ocr: { raw_output: any; engine: string; confidence: number; processing_time_seconds: number } | null;
   lab_report: { lab_results: LabResult[] } | null;
   diagnosis: {

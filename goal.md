@@ -17,9 +17,8 @@ sequenceDiagram
     actor Patient
     actor Doctor
     participant System as FastAPI Backend
-    participant Classifier as MobileNetV3 + Heuristics
     participant Router as OCR Router (AutoOCRProvider)
-    participant Qwen as Qwen2.5-VL (Local VRAM)
+    participant Granite as Granite Vision 4.1-4b (Local VRAM)
     participant Paddle as PaddleOCR (Local GPU)
     database DB as SQLite Database
 
@@ -28,17 +27,16 @@ sequenceDiagram
     System-->>Patient: Upload confirmation (JSON with report_id)
     
     Note over System: Automatic OCR runs in a daemon thread
-    System->>Classifier: Pass preprocessed image array
-    Classifier-->>System: Return class (HANDWRITTEN / PRINTED_TEXT / TABLE)
+    System->>Router: Route based on user-selected doc_type (printed/tabular)
     
-    alt Class is HANDWRITTEN
-        System->>Router: Route to Qwen2.5-VL
-        Router->>Qwen: Extract text using 4-bit vision-language model
-        Qwen-->>Router: Return extracted handwritten text
-    else Class is PRINTED_TEXT or TABLE
+    alt doc_type is tabular (TABLE)
+        System->>Router: Route to Granite Vision
+        Router->>Granite: Extract text using 4-bit vision-language model
+        Granite-->>Router: Return extracted tabular text
+    else doc_type is printed (PRINTED_TEXT)
         System->>Router: Route to PaddleOCR
         Router->>Paddle: Extract text using GPU-accelerated PaddlePaddle
-        Paddle-->>Router: Return extracted printed/tabular text
+        Paddle-->>Router: Return extracted printed text
     end
 
     Router-->>System: Return raw OCR text
@@ -52,10 +50,10 @@ sequenceDiagram
 
 1. **Patient Upload:** The patient uploads an image (or PDF) of their medical/hepatology lab report via the Patient Portal.
 2. **Dashboard Receipt:** The uploaded file is stored locally, metadata is written to the SQLite database, and the report appears on the Doctor's Dashboard.
-3. **Background Classification & Routing:**
-   * A MobileNetV3-based CNN and heuristic ensemble classifier automatically identifies the document type.
-   * **Handwritten Reports** are routed to **Qwen-2.5-VL** (local 4-bit Vision-Language Model).
-   * **Printed / Tabular Reports** are routed to **PaddleOCR** (local PP-Structure & Text Recognition).
+3. **Background Routing (user-selected doc_type):**
+   * The patient selects the document type at upload (`printed` or `tabular`).
+   * **Tabular Reports** are routed to **Granite Vision 4.1-4b** (local 4-bit Vision-Language Model).
+   * **Printed Reports** are routed to **PaddleOCR** (local Text Recognition).
 4. **Text Extraction & Delivery:**
    * The selected local engine extracts the raw OCR text.
    * The text is persisted in the SQLite database under the `ocr_text` field.
@@ -79,15 +77,14 @@ To ensure the pipeline operates on local GPU hardware without encountering drive
 * **Forbidden Approaches:**
   * **DirectML** is explicitly forbidden.
   * **RapidOCR** is explicitly forbidden.
-  * All downstream setups (including virtual environments, FastAPI server, Qwen-VL wrapper services, and other backend tasks) must link with and run under this Python 3.12 environment setup.
+  * All downstream setups (including virtual environments, FastAPI server, Granite Vision wrapper, and other backend tasks) must link with and run under this Python 3.12 environment setup.
 
 ### Model Routing Details
 
 | Document Class | Primary OCR Engine | Target Execution |
 |---|---|---|
-| **HANDWRITTEN** | Qwen2.5-VL | GPU (with `bitsandbytes` 4-bit quantization config) |
 | **PRINTED_TEXT** | PaddleOCR | GPU (using the custom CUDA 12.9 PaddlePaddle wheel) |
-| **TABLE** | PaddleOCR (PP-Structure) | GPU (using the custom CUDA 12.9 PaddlePaddle wheel) |
+| **TABLE** | Granite Vision 4.1-4b | GPU (with `bitsandbytes` 4-bit quantization config) |
 
 ---
 

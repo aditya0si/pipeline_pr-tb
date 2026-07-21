@@ -58,7 +58,7 @@ RULES:
 - CRITICAL_HIGH if value > 3× upper reference limit
 - CRITICAL_LOW if value < 0.5× lower reference limit
 - For TABLE input: first row is headers; subsequent rows are data
-- For HANDWRITTEN/PRINTED input: parse line-by-line for test/value/unit patterns
+- For PRINTED input: parse line-by-line for test/value/unit patterns
 - Output ONLY valid JSON — no markdown fences, no preamble, no explanation
 
 RAW OCR OUTPUT:

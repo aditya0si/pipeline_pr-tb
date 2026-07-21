@@ -2,7 +2,7 @@
 
 > **Purpose:** Developer reference for the MedVault medical OCR pipeline.  
 > **Last updated:** 2026-07-17  
-> **Stack:** Python 3.12 · FastAPI · React 19 · TypeScript · SQLite · PaddleOCR · Qwen2.5-VL
+> **Stack:** Python 3.12 · FastAPI · React 19 · TypeScript · SQLite · PaddleOCR · Granite Vision 4.1-4b
 
 ---
 
@@ -10,7 +10,7 @@
 
 MedVault is a modular medical document OCR pipeline that:
 1. Accepts medical-lab image uploads from patients.
-2. Classifies each image as **TABLE**, **HANDWRITTEN**, or **PRINTED_TEXT**.
+2. Routes each image as **TABLE** or **PRINTED_TEXT** (user-selected).
 3. Routes the image to the appropriate OCR engine.
 4. Extracts structured lab results.
 5. Validates and diagnoses abnormal values.
@@ -30,9 +30,8 @@ pipeline_v1/
 │   ├── auth.py                 # JWT auth, password hashing
 │   ├── database.py             # SQLite connection factory + migrations
 │   ├── schemas.py              # Pydantic request/response models
-│   ├── document_classifier.py  # Re-export shim → backend.classifier
+│   ├── document_classifier.py  # Re-export shim → backend.classifier (DEPRECATED)
 │   ├── paddle_ocr_provider.py  # PaddleOCR GPU backend (printed + tables)
-│   ├── qwen_vl_provider.py     # Qwen2.5-VL backend (handwritten)
 │   ├── gpu_manager.py          # GPU model preloading / status
 │   ├── heuristics.py           # Structured extraction heuristics
 │   ├── image_processing.py     # Preprocessing (deskew, enhance, normalize)
@@ -41,14 +40,11 @@ pipeline_v1/
 │   ├── medical_rules.json      # Medical validation rules
 │   ├── labels.json             # Classification label definitions
 │   ├── ocr_printed.json        # Printed OCR config
-│   ├── ocr_handwritten.json    # Handwritten OCR config
 │   ├── agents/                 # Agentic pipeline nodes
 │   │   ├── preprocessing_agent.py
-│   │   ├── classification_agent.py
 │   │   ├── ocr_router_agent.py
 │   │   ├── printed_ocr_agent.py
 │   │   ├── table_ocr_agent.py
-│   │   ├── handwritten_ocr_agent.py
 │   │   ├── extraction_agent.py
 │   │   ├── validation_agent.py
 │   │   ├── diagnosis_agent.py
@@ -56,11 +52,10 @@ pipeline_v1/
 │   │   ├── evaluation_agent.py
 │   │   ├── ocr_result.py
 │   │   └── pipeline_v1_AGENTS.md
-│   ├── classifier/             # CNN classifier (MobileNetV3 + heuristics)
 │   ├── ocr/                    # OCR provider implementations
 │   │   └── providers/
 │   │       ├── paddle_provider.py
-│   │       └── qwen_provider.py
+│   │       └── granite_provider.py  # Granite Vision 4.1-4b (tabular, 4-bit NF4)
 │   ├── preprocessing/          # Image preprocessing modules
 │   ├── extraction/             # Structured extraction logic
 │   ├── routes/                 # FastAPI routers
@@ -76,7 +71,7 @@ pipeline_v1/
 │   │   ├── pipeline_service.py # Unified DAG runner + PipelineGraph
 │   │   └── ai_service.py       # AI analysis / summary generation
 │   ├── uploads/                # Uploaded report images
-│   └── weights/                # Trained classifier weights (.pth)
+│   └── weights/                # Trained classifier weights (.pth) (DEPRECATED)
 ├── frontend/                   # React + TypeScript SPA
 │   ├── src/
 │   │   ├── main.tsx
@@ -111,7 +106,7 @@ pipeline_v1/
 - Creates the FastAPI app with CORS middleware.
 - Registers all routers under `app.include_router(...)`.
 - **Lifespan hook** (`lifespan`):
-  - Checks CUDA availability (Qwen requires GPU).
+  - Checks CUDA availability (Granite Vision requires GPU).
   - Creates `uploads/` directory.
   - Initialises SQLite database (`init_db()`).
   - Seeds a default test patient for no-auth test endpoints.
@@ -152,14 +147,14 @@ The pipeline is orchestrated by `PipelineGraph` in `backend/services/pipeline_se
 ### 4.1 Pipeline Stages
 
 ```
-Preprocess → Classify → OCR → Extract → Validate → Diagnose → [Summary] → [Evaluate]
+Preprocess → Route → OCR → Extract → Validate → Diagnose → [Summary] → [Evaluate]
 ```
 
 | Stage | Agent | Description |
 |-------|-------|-------------|
 | Preprocess | `PreprocessingAgent` | Deskew, enhance, normalize image |
-| Classify | `ClassificationAgent` | 3-class CNN + heuristic ensemble |
-| OCR | `run_ocr()` via `OCR Router` | Dispatch to TABLE / HANDWRITTEN / PRINTED agent |
+| Route | `OCR Router Agent` | Route to TABLE / PRINTED_TEXT agent |
+| OCR | `run_ocr()` via `OCR Router` | Dispatch to TABLE / PRINTED agent |
 | Extract | `ExtractionAgent` | Parse structured lab results from OCR text |
 | Validate | `ValidationAgent` | Validate against medical rules |
 | Diagnose | `DiagnosisAgent` | Identify abnormal values, urgent flags |
@@ -188,7 +183,6 @@ Serialisable dataclass returned by `run_pipeline()`:
 @dataclass
 class PipelineResult:
     preprocessing: Dict[str, Any]
-    classification: Dict[str, Any]
     ocr: Dict[str, Any]
     lab_report: Dict[str, Any]
     diagnosis: Dict[str, Any]
@@ -201,39 +195,36 @@ class PipelineResult:
 
 ## 5. OCR System
 
-### 5.1 Document Classification
+### 5.1 Document Routing
 
-- **Model:** MobileNetV3-Large CNN + heuristic feature ensemble.
-- **Classes:** `TABLE`, `HANDWRITTEN`, `PRINTED_TEXT`.
-- **Weights:** `backend/weights/classifier_3class.pth`.
-- **Accuracy:** ~77.4% on the 93-image labeled dataset.
-- **Heuristic features:** Hough line density, stroke-width variance, connected-component stats, run-length distribution, morphological grid score, Y-projection periodicity.
+- **Mechanism:** User selects doc_type (`printed` or `tabular`) at upload time.
+- **No classifier required** — explicit user intent replaces ML classification.
+- **Routes:** `PRINTED_TEXT` → PaddleOCR, `TABLE` → Granite Vision 4.1-4b.
 
 ### 5.2 OCR Providers
 
 | Engine | Provider Class | Use Case | Backend |
 |--------|---------------|----------|---------|
-| PaddleOCR | `PaddleOCRProvider` | PRINTED_TEXT, TABLE | GPU (CUDA 12.9) |
+| PaddleOCR | `PaddleOCRProvider` | PRINTED_TEXT | GPU (CUDA 12.9) |
 | PP-Structure | `PaddleOCRProvider` (table mode) | TABLE | GPU (CUDA 12.9) |
-| Qwen2.5-VL | `QwenVLProvider` | HANDWRITTEN | GPU (CUDA 12.9) |
+| Granite Vision 4.1-4b | `GraniteVisionProvider` | TABLE | GPU (CUDA 12.9, 4-bit NF4) |
 
 ### 5.3 AutoOCRProvider (`backend/services/ocr_service.py`)
 
-- Caches classifier, Paddle, and Qwen wrappers as module-level singletons (thread-safe).
-- Routes based on 3-class prediction:
-  - `HANDWRITTEN` → Qwen2.5-VL
-  - `TABLE` / `PRINTED_TEXT` → PaddleOCR
-- Fallback: if PaddleOCR fails, falls back to Qwen-VL for printed/table docs.
+- Caches Paddle and Granite wrappers as module-level singletons (thread-safe).
+- Routes based on user-selected doc_type:
+  - `PRINTED_TEXT` → PaddleOCR
+  - `TABLE` → Granite Vision 4.1-4b
+- Cross-fallback: if primary engine fails, falls back to the other engine.
 
 ### 5.4 OCR Router Agent (`backend/agents/ocr_router_agent.py`)
 
 ```python
 AGENT_FACTORIES = {
     "TABLE": _make_table_agent,
-    "HANDWRITTEN": _make_handwritten_agent,
     "PRINTED_TEXT": _make_printed_agent,
     "printed": _make_printed_agent,        # legacy alias
-    "handwritten": _make_handwritten_agent, # legacy alias
+    "tabular": _make_table_agent,           # legacy alias
 }
 ```
 
@@ -245,8 +236,8 @@ Each factory is a zero-arg callable returning a ready agent instance (test-frien
 
 ### 6.1 Preloading (`backend/gpu_manager.py`)
 
-- `preload_models(blocking=False)`: Eagerly loads classifier CNN + PaddleOCR + Qwen-VL onto GPU in a background thread.
-- `gpu_status()`: Returns dict with `cuda_available`, `classifier_loaded`, `paddle_loaded`, `qwen_loaded`, etc.
+- `preload_models(blocking=False)`: Eagerly loads PaddleOCR + Granite Vision onto GPU in a background thread.
+- `gpu_status()`: Returns dict with `cuda_available`, `paddle_loaded`, `granite_loaded`, etc.
 
 ### 6.2 Environment Variables
 
@@ -255,8 +246,6 @@ Each factory is a zero-arg callable returning a ready agent instance (test-frien
 | `PADDLE_USE_GPU` | `1` (Windows) | Enable Paddle GPU mode |
 | `FLAGS_use_gpu` | `1` (Windows) | Paddle GPU flag |
 | `MEDVAULT_PRELOAD_GPU` | `1` | Enable eager GPU preloading at startup |
-| `QWEN_SERVER_URL` | `http://127.0.0.1:8002/v1/chat/completions` | Qwen-VL server endpoint |
-| `QWEN_MODEL_PATH` | — | Path to GGUF model (llama.cpp server) |
 
 ---
 
@@ -371,7 +360,7 @@ Single-page app with view-state routing (no URL-based router for most views):
 | `patient_id` | TEXT FK | References `patients.id` |
 | `image_hash` | TEXT | SHA256 of original image |
 | `image_path` | TEXT | Path to stored image |
-| `ocr_provider` | TEXT | `paddleocr` or `qwen_vl` |
+| `ocr_provider` | TEXT | `paddleocr` or `granite` |
 | `ocr_raw` | TEXT | Raw OCR JSON |
 | `ocr_fields` | TEXT | Validated structured JSON |
 | `summary` | TEXT | AI summary text |
@@ -383,7 +372,7 @@ Single-page app with view-state routing (no URL-based router for most views):
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `provider` | TEXT PK | `paddleocr` or `qwen_vl` |
+| `provider` | TEXT PK | `paddleocr` or `granite` |
 | `config_json` | TEXT | Provider-specific settings |
 | `enabled` | INTEGER | 1 = enabled, 0 = disabled |
 
@@ -435,7 +424,6 @@ Single-page app with view-state routing (no URL-based router for most views):
   - `test_pipeline_e2e.py` — End-to-end pipeline tests.
   - `test_pipeline_e2e_ibm_spec.py` — IBM spec compliance tests.
   - `test_ocr_agents.py` — OCR agent unit tests.
-  - `test_classifier.py` / `test_classifier_module.py` — Classifier tests.
   - `test_backend_units.py` — Backend unit tests.
   - `test_routes_integration.py` — Route integration tests.
 
@@ -445,13 +433,10 @@ Single-page app with view-state routing (no URL-based router for most views):
 
 | Path | Purpose |
 |------|---------|
-| `scripts/train_classifier.py` | Train the 3-class CNN classifier |
-| `scripts/eval_classifier.py` | Evaluate classifier accuracy |
 | `scripts/tune_weights.py` | Tune heuristic weights |
 | `scripts/diagnose_gpu.py` | GPU diagnostics |
 | `scripts/diagnose_features.py` | Feature diagnostics |
 | `notebooks/01_preprocessing_exploration.ipynb` | Preprocessing exploration |
-| `notebooks/02_classifier_training.ipynb` | Classifier training |
 | `notebooks/03_extraction_evaluation.ipynb` | Extraction evaluation |
 
 ---
@@ -464,8 +449,6 @@ Single-page app with view-state routing (no URL-based router for most views):
 | `GEMINI_API_KEY` | No | — | Google Gemini API key |
 | `MEDVAULT_STATIC_DIR` | No | `frontend/dist` | Frontend build directory |
 | `MEDVAULT_PRELOAD_GPU` | No | `1` | Enable GPU preloading |
-| `QWEN_MODEL_PATH` | No | — | GGUF model path for llama.cpp |
-| `QWEN_SERVER_URL` | No | `http://127.0.0.1:8002/v1/chat/completions` | Qwen-VL server |
 | `PADDLE_USE_GPU` | No | `1` (Windows) | Paddle GPU mode |
 | `FLAGS_use_gpu` | No | `1` (Windows) | Paddle GPU flag |
 | `PADDLE_LANG` | No | `en` | PaddleOCR language |
@@ -501,8 +484,8 @@ npm run dev
 
 ## 15. Important Design Decisions
 
-1. **GPU-first:** PaddleOCR and Qwen-VL run on GPU by default on Windows (CUDA 12.9). CPU fallback is opt-in.
-2. **Process isolation:** Paddle and Qwen run in separate processes/microservices to avoid GPU memory conflicts.
+1. **GPU-first:** PaddleOCR and Granite Vision run on GPU by default on Windows (CUDA 12.9). CPU fallback is opt-in.
+2. **Process isolation:** Paddle and Granite Vision run in separate processes to avoid GPU memory conflicts.
 3. **Offline-first pipeline:** `PipelineGraph` is dependency-free (no LangGraph/LangChain) so it runs 100% offline.
 4. **No-auth test mode:** A seeded default patient enables the Patient Portal without login for testing.
 5. **Async SQLite:** All DB access uses `aiosqlite` — never `sqlite3` sync.
@@ -519,10 +502,10 @@ npm run dev
 | `backend/auth.py` | JWT auth, password hashing |
 | `backend/database.py` | SQLite connection factory, schema migrations |
 | `backend/schemas.py` | Pydantic models for requests/responses |
-| `backend/document_classifier.py` | Re-export shim for `backend.classifier` |
-| `backend/classifier/` | CNN classifier (MobileNetV3 + heuristics) |
+| `backend/document_classifier.py` | Re-export shim for `backend.classifier` (DEPRECATED) |
+| `backend/classifier/` | CNN classifier (MobileNetV3 + heuristics) (DEPRECATED) |
 | `backend/paddle_ocr_provider.py` | PaddleOCR GPU backend, PP-Structure table parsing |
-| `backend/qwen_vl_provider.py` | Qwen2.5-VL handwritten OCR backend |
+| `backend/granite_provider.py` | Granite Vision 4.1-4b tabular OCR backend (4-bit NF4) |
 | `backend/gpu_manager.py` | GPU preloading, status reporting |
 | `backend/heuristics.py` | Structured extraction heuristics |
 | `backend/image_processing.py` | Image preprocessing (deskew, enhance) |
@@ -555,7 +538,7 @@ npm run dev
 ## 17. Common Gotchas
 
 1. **Python version:** Must be **3.12** — the PaddlePaddle CUDA 12.9 wheel is only available for CPython 3.12 on Windows.
-2. **GPU required for Qwen:** Qwen2.5-VL has no CPU fallback. If CUDA is unavailable, handwritten OCR will error.
+2. **GPU required for Granite Vision:** Granite Vision requires CUDA. If CUDA is unavailable, tabular OCR will error.
 3. **Windows DLL search:** `paddle_ocr_provider.py` calls `_configure_windows_dll_search()` before importing paddle to resolve CUDA/cuDNN DLLs.
 4. **No `sqlite3` sync:** All database access must use `aiosqlite`.
 5. **Agent factories for tests:** `AGENT_FACTORIES` in `ocr_router_agent.py` enables monkeypatching with fakes in unit tests.

@@ -29,19 +29,21 @@ echo "[3/4] Installing frontend dependencies..."
 # ── 4. Start servers ─────────────────────────────────────────
 echo "[4/4] Starting servers..."
 echo ""
-echo "  Backend:  http://localhost:3000"
-echo "  Frontend: http://localhost:3001"
+echo "  Backend:  http://localhost:3002"
+echo "  Frontend: http://localhost:3003"
 echo ""
 
 # Start backend in background
 export QWEN_VL_SERVER_URL="http://127.0.0.1:8002/v1/chat/completions"
-.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 3000 --reload &
+export TRANSFORMERS_OFFLINE=1
+export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 3002 --timeout-keep-alive 300 --reload &
 BACKEND_PID=$!
 
 # Start frontend in background
 (
     cd frontend
-    npx vite --port 3001
+    npx vite --port 3003
 ) &
 FRONTEND_PID=$!
 

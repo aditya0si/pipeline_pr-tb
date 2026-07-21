@@ -57,7 +57,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         ocr_router_agent, "AGENT_FACTORIES",
         {k: (lambda: _FakeOCRAgent()) for k in
-         ("TABLE", "HANDWRITTEN", "PRINTED_TEXT", "printed", "handwritten")},
+         ("TABLE", "PRINTED_TEXT", "printed", "tabular")},
     )
     db_module.init_db()
     with TestClient(app) as c:

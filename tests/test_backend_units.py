@@ -167,25 +167,21 @@ def test_ocr_build_and_engines():
         OCRProvider()  # type: ignore[abstract]
 
 
-def test_ocr_route_handwritten_vs_printed(monkeypatch):
+def test_ocr_route_printed_vs_tabular(monkeypatch):
     import numpy as np
     monkeypatch.setattr("services.ocr_service._first_page_cv2",
                         lambda *a, **k: np.ones((50, 50, 3), dtype=np.uint8) * 255)
-    monkeypatch.setattr("services.ocr_service._get_classifier",
-                        lambda *a, **k: _FakeClassifier("HANDWRITTEN"))
-    monkeypatch.setattr("services.ocr_service._get_qwen_wrapper",
+    monkeypatch.setattr("services.ocr_service._get_paddle_wrapper",
                         lambda **k: _FakeProvider())
     prov = AutoOCRProvider()
     dt, p = prov._route("x", "image")
-    assert dt == "HANDWRITTEN" and isinstance(p, _FakeProvider)
+    assert dt == "PRINTED_TEXT" and isinstance(p, _FakeProvider)
 
-    monkeypatch.setattr("services.ocr_service._get_classifier",
-                        lambda *a, **k: _FakeClassifier("PRINTED_TEXT"))
-    monkeypatch.setattr("services.ocr_service._get_paddle_wrapper",
+    monkeypatch.setattr("services.ocr_service._get_granite_wrapper",
                         lambda **k: _FakeProvider())
     prov2 = AutoOCRProvider()
-    dt2, p2 = prov2._route("x", "image")
-    assert dt2 == "PRINTED_TEXT" and isinstance(p2, _FakeProvider)
+    dt2, p2 = prov2._route("tabular", "image")
+    assert dt2 == "TABLE" and isinstance(p2, _FakeProvider)
 
 
 def test_windows_gpu_defaults_are_enabled(monkeypatch):
@@ -312,7 +308,7 @@ def test_classification_agent_no_fallback_when_confident():
     # fallback contract and a valid class rather than the specific label.
     agent = ClassificationAgent(llm_fallback=True, llm_client=None)
     res = agent.run(_table_img())
-    assert res.doc_class in ("TABLE", "PRINTED_TEXT", "HANDWRITTEN")
+    assert res.doc_class in ("TABLE", "PRINTED_TEXT")
     assert res.fallback_triggered is False
 
 

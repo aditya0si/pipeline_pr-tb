@@ -13,7 +13,7 @@ from collections import defaultdict
 import cv2
 import numpy as np
 
-CLASSES = ("TABLE", "HANDWRITTEN", "PRINTED_TEXT")
+CLASSES = ("TABLE", "PRINTED_TEXT")
 
 
 def main() -> None:

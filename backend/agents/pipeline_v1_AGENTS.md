@@ -23,7 +23,7 @@ CREATE TABLE reports (
     patient_id  TEXT NOT NULL,
     image_hash  TEXT NOT NULL,          -- SHA256 of original image bytes
     image_path  TEXT NOT NULL,          -- path inside container volume
-    ocr_provider TEXT NOT NULL,         -- "paddleocr" | "qwen_vl"
+    ocr_provider TEXT NOT NULL,         -- "paddleocr" | "granite"
     ocr_raw     TEXT,                   -- raw OCR JSON (unvalidated)
     ocr_fields  TEXT,                   -- validated + structured JSON
     summary     TEXT,                   -- AI summary text

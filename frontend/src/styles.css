@@ -1438,7 +1438,6 @@ textarea.neu-input { resize: vertical; min-height: 60px; }
   color: #fff;
 }
 .cls-table { background: #4f6ef7; }
-.cls-handwritten { background: #f59e0b; }
 .cls-printed { background: #10b981; }
 .cls-unknown { background: #94a3b8; }
 .confidence { display: flex; align-items: center; gap: 8px; font-size: 12px; }

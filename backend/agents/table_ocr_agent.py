@@ -3,15 +3,15 @@ table_ocr_agent.py — Agent 3a of the MedVault agentic pipeline.
 
 Extracts 2D table structure from TABLE-class documents.
 
-Primary path : PaddleOCR PP-Structure (table recovery) via
-               ``PaddleOCRProvider.extract_table_pp_structure``.
+Primary path : Granite Vision 4.1-4b (``GraniteVisionProvider.extract_text``)
+               which returns free-form text from the tabular report image.
 Fallback path: basic PaddleOCR (``run_paddle_ocr_on_document``) with heuristic
-               y-clustering row grouping, used when PP-Structure confidence is
-               below ``confidence_threshold`` (default 0.75) or is unavailable.
+               y-clustering row grouping, used when Granite is unavailable or
+               returns empty.
 
 The providers operate on filepaths, so the input ``ndarray`` is transiently
-written to a temp PNG. Heavy PaddleOCR / PP-Structure imports are lazy and the
-provider instances are injectable for offline unit testing.
+written to a temp PNG. Heavy imports are lazy and the provider instances
+are injectable for offline unit testing.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from loguru import logger
 
 from agents.ocr_result import OCRResult
 
-_PP_STRUCTURE_ENGINE = "PaddleOCR-PP-Structure"
+_GRANITE_ENGINE = "Granite-Vision-4.1-4b"
 _FALLBACK_ENGINE = "PaddleOCR-Basic-Fallback"
 _CONFIDENCE_THRESHOLD = 0.75
 
@@ -66,20 +66,20 @@ def _group_lines_into_rows(lines: List[dict], y_tolerance: int = 15) -> List[Lis
 
 
 class TableOCRAgent:
-    """Agent 3a — TABLE OCR via PaddleOCR PP-Structure with basic-OCR fallback."""
+    """Agent 3a — TABLE OCR via Granite Vision with PaddleOCR basic fallback."""
 
-    def __init__(self, pp_provider=None, paddle_provider=None,
+    def __init__(self, granite_provider=None, paddle_provider=None,
                  confidence_threshold: float = _CONFIDENCE_THRESHOLD):
-        self._pp_provider = pp_provider
+        self._granite_provider = granite_provider
         self._paddle_provider = paddle_provider
         self.confidence_threshold = float(confidence_threshold)
 
     @property
-    def pp_provider(self):
-        if self._pp_provider is None:
-            from backend.ocr.providers.paddle_provider import PaddleOCRProvider
-            self._pp_provider = PaddleOCRProvider()
-        return self._pp_provider
+    def granite_provider(self):
+        if self._granite_provider is None:
+            from backend.ocr.providers.granite_provider import GraniteVisionProvider
+            self._granite_provider = GraniteVisionProvider()
+        return self._granite_provider
 
     @property
     def paddle_provider(self):
@@ -89,28 +89,26 @@ class TableOCRAgent:
         return self._paddle_provider
 
     def run(self, image: np.ndarray) -> OCRResult:
-        """Extract a 2D table from ``image`` (BGR ndarray) -> OCRResult."""
+        """Extract text from a tabular report ``image`` (BGR ndarray) -> OCRResult."""
         start = time.time()
         tmp = _save_tmp(image)
         try:
-            # ── Primary: PP-Structure ──────────────────────────────────────────
+            # ── Primary: Granite Vision ────────────────────────────────────────
             try:
-                rows = self.pp_provider.extract_table_pp_structure(tmp, "image")
-                if rows:
-                    conf = self.pp_provider.table_confidence(rows)
-                    if conf >= self.confidence_threshold:
-                        return OCRResult(
-                            raw_output=rows,
-                            engine=_PP_STRUCTURE_ENGINE,
-                            confidence=conf,
-                            processing_time_seconds=time.time() - start,
-                        )
-                    logger.info(
-                        "PP-Structure confidence {:.2f} < {:.2f}; using fallback",
-                        conf, self.confidence_threshold,
+                text = self.granite_provider.extract_text(tmp, "image")
+                if text and text.strip():
+                    # Granite returns free-form text; estimate confidence heuristically
+                    word_count = len(text.split())
+                    conf = min(0.5 + (word_count / 200) * 0.4, 0.95) if word_count > 0 else 0.3
+                    return OCRResult(
+                        raw_output=text,
+                        engine=_GRANITE_ENGINE,
+                        confidence=round(conf, 4),
+                        processing_time_seconds=time.time() - start,
                     )
+                logger.info("Granite Vision returned empty text; using fallback")
             except Exception as e:
-                logger.warning("PP-Structure path failed, falling back: {}", e)
+                logger.warning("Granite Vision path failed, falling back: {}", e)
 
             # ── Fallback: basic PaddleOCR + heuristic row grouping ─────────────
             from backend.ocr.providers.paddle_provider import run_paddle_ocr_on_document

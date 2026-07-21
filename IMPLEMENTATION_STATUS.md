@@ -15,7 +15,7 @@ Over the course of five implementation sessions, the MedVault OCR codebase was t
 ### The Two Pivotal Shifts
 
 1. **Shift to Local OCR Providers (Session 2B)**  
-   The original plan called for Git submodules pulling in each intern's upstream OCR repository. This was **replaced with local, in-repo provider wrappers** (`backend/ocr/providers/`) for PaddleOCR, Qwen2.5-VL, and Surya. This eliminated fragile external dependencies, gave full control over VRAM management, and allowed graceful fallback chains to be tested in isolation. The OCR router (`backend/ocr/router.py`) now dispatches to three modular engines — table (PaddleOCR PP-Structure), handwritten (Qwen2.5-VL → Surya fallback), and printed (PaddleOCR) — each with its own provider module.
+   The original plan called for Git submodules pulling in each intern's upstream OCR repository. This was **replaced with local, in-repo provider wrappers** (`backend/ocr/providers/`) for PaddleOCR and Granite Vision. This eliminated fragile external dependencies, gave full control over VRAM management, and allowed graceful fallback chains to be tested in isolation. The OCR router (`backend/ocr/router.py`) now dispatches to two modular engines — tabular (Granite Vision 4.1-4b) and printed (PaddleOCR) — each with its own provider module. The handwritten OCR path and ML classifier were removed; document type is now user-selected at upload time.
 
 2. **Python 3.12 + PaddlePaddle CUDA 12.9 Environment (Session 3.5)**  
    The project hit a hard blocker: Python 3.14.3 (the system default) is incompatible with the only PaddlePaddle GPU wheel that supports the RTX 5060 (Blackwell sm_120) architecture. The `paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl` wheel is **exclusively built for CPython 3.12**. Session 3.5 resolved this by introducing a `setup_env.ps1` script that uses `uv` to create a strict Python 3.12 virtual environment and installs the exact Baidu CUDA 12.9 wheel before any other dependencies. This is now the **only supported Python version** for the project.
@@ -35,10 +35,10 @@ Over the course of five implementation sessions, the MedVault OCR codebase was t
 ### Session 2B: Local OCR Implementations & VRAM Management ✅
 **Goal:** Replace Git submodules with local provider wrappers; ensure safe VRAM usage.
 
-- Created `backend/ocr/providers/` with `paddle_provider.py`, `qwen_vl_provider.py`, and `surya_provider.py`.
-- **Surya provider** forces `DETECTOR_BATCH_SIZE=1` at import time to prevent GPU OOM on 8 GB VRAM cards.
-- Updated `gpu_manager.py` to **eager-load only PaddleOCR and Qwen2.5-VL** (Surya is lazy-loaded on fallback).
-- Updated the three OCR routers (`ocr1_table.py`, `ocr2_handwritten.py`, `ocr3_printed.py`) to consume the new local providers.
+- Created `backend/ocr/providers/` with `paddle_provider.py` and `granite_provider.py`.
+- **Granite Vision provider** loads `ibm-granite/granite-vision-4.1-4b` in 4-bit NF4 via bitsandbytes to fit in 8 GB VRAM.
+- Updated `gpu_manager.py` to **eager-load PaddleOCR and Granite Vision** (both lazy-loaded to avoid VRAM contention).
+- Updated the OCR routers (`ocr1_table.py`, `ocr3_printed.py`) to consume the new local providers.
 - **Verified:** Unit tests pass; VRAM stays under 6 GB on startup.
 
 ### Session 3: Unified Pipeline CLI ✅
@@ -68,7 +68,7 @@ Over the course of five implementation sessions, the MedVault OCR codebase was t
 ### Session 5: Documentation & Notebooks ✅
 **Goal:** Finalize environment config, setup docs, and exploratory notebooks.
 
-- Created `.env.example` documenting all environment variables (PaddleOCR, Surya, Qwen-VL, LLM, JWT, etc.).
+- Created `.env.example` documenting all environment variables (PaddleOCR, Granite Vision, LLM, JWT, etc.).
 - Updated `SETUP.md` with the Python 3.12 constraint, `setup_env.ps1` workflow, and CLI/server boot instructions.
 - Created three exploratory Jupyter notebooks in `notebooks/`:
   - `01_preprocessing_exploration.ipynb` — deskew and cropping logic.
@@ -83,9 +83,9 @@ Over the course of five implementation sessions, the MedVault OCR codebase was t
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌──────────────┐
-│  Input Image │────▶│ Preprocessing│────▶│  Classifier  │────▶│  OCR Router  │
-│  (png/jpg)   │     │  (deskew,    │     │ (MobileNetV3 │     │ (table/hw/   │
-│              │     │   crop, CLAHE)│     │  + heuristics)│    │  printed)    │
+│  Input Image │────▶│ Preprocessing│────▶│  User selects │────▶│  OCR Router  │
+│  (png/jpg)   │     │  (deskew,    │     │  doc_type      │     │ (tabular/    │
+│              │     │   crop, CLAHE)│     │ (printed/tabular)│    │  printed)    │
 └─────────────┘     └──────────────┘     └─────────────┘     └──────┬───────┘
                                                                        │
                     ┌──────────────┐     ┌─────────────┐     ┌─────────▼──────┐
@@ -99,9 +99,8 @@ Over the course of five implementation sessions, the MedVault OCR codebase was t
 
 | Document Class | Primary Engine | Fallback Engine |
 |---|---|---|
-| TABLE | PaddleOCR PP-Structure | Surya Table Recognition |
-| HANDWRITTEN | Qwen2.5-VL (llama.cpp / transformers 4-bit) | Surya OCR |
-| PRINTED_TEXT | PaddleOCR (GPU) | — |
+| TABLE | Granite Vision 4.1-4b (4-bit NF4) | PaddleOCR |
+| PRINTED_TEXT | PaddleOCR (GPU) | Granite Vision |
 
 ---
 
@@ -112,8 +111,8 @@ Over the course of five implementation sessions, the MedVault OCR codebase was t
 | Modular backend (`classifier/`, `ocr/`, `extraction/`, `preprocessing/`) | ✅ |
 | Backward-compatible re-exports | ✅ |
 | Local OCR providers (no submodules) | ✅ |
-| VRAM-safe GPU management (eager load limited to Paddle + Qwen) | ✅ |
-| Surya `DETECTOR_BATCH_SIZE=1` enforced | ✅ |
+| VRAM-safe GPU management (lazy load Paddle + Granite) | ✅ |
+| Granite Vision 4-bit NF4 quantization | ✅ |
 | Unified CLI (`pipeline.py`) | ✅ |
 | FastAPI server backward compatible | ✅ |
 | Python 3.12 + PaddlePaddle CUDA 12.9 environment | ✅ |

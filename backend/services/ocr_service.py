@@ -1,13 +1,12 @@
-"""backend/services/ocr_service.py — OCR provider layer (Session 6).
+"""
+backend/services/ocr_service.py — OCR provider layer.
 
-Extracted verbatim from ``main.py``:
-  - ``OCRProvider`` ABC + Paddle/Qwen wrappers
-  - cached factory singletons (``_get_classifier`` / ``_get_paddle_wrapper`` /
-    ``_get_qwen_wrapper``)
-  - ``AutoOCRProvider`` (3-class routing added in Session 2)
+  - ``OCRProvider`` ABC + Paddle/Granite wrappers
+  - cached factory singletons (``_get_paddle_wrapper`` / ``_get_granite_wrapper``)
+  - ``AutoOCRProvider`` (2-class routing: PRINTED_TEXT / TABLE)
   - ``OCR_ENGINES`` registry + ``build_ocr``
 
-Heavy imports (paddle/qwen/torch/document_classifier) stay lazy inside the
+Heavy imports (paddle/granite/torch) stay lazy inside the
 functions/constructors exactly as before, so importing this module is cheap and
 CPU-only safe.
 """
@@ -48,22 +47,15 @@ class PaddleOCRProviderWrapper(OCRProvider):
         return self._provider.extract_structured(filepath, filetype)
 
 
-class QwenVLProviderWrapper(OCRProvider):
-    """MedVault wrapper around Qwen2.5-VL for handwritten report transcription (GPU)."""
-    def __init__(self, model_id: str = "Qwen/Qwen2.5-VL-3B-Instruct", device: str = "",
-                 torch_dtype: str = "bfloat16", server_url: str = "", max_pixels: int = 128 * 28 * 28,
-                 load_in_4bit: bool = True):
-        from backend.ocr.providers.qwen_provider import QwenVLProvider
-        # Honour the microservice URL from the environment so the in-process torch
-        # path (which needs CUDA) is only taken when no GPU microservice is set.
-        env_url = os.environ.get("QWEN_VL_SERVER_URL", "") or ""
-        effective_url = server_url or env_url
-        self._provider = QwenVLProvider(
+class GraniteVisionProviderWrapper(OCRProvider):
+    """MedVault wrapper around IBM Granite Vision 4.1-4b for tabular report OCR (GPU)."""
+    def __init__(self, model_id: str = "ibm-granite/granite-vision-4.1-4b",
+                 device: str = "", torch_dtype: str = "float16", load_in_4bit: bool = True):
+        from backend.ocr.providers.granite_provider import GraniteVisionProvider
+        self._provider = GraniteVisionProvider(
             model_id=model_id,
             device=device or None,
             torch_dtype=torch_dtype,
-            server_url=effective_url,
-            max_pixels=max_pixels,
             load_in_4bit=load_in_4bit,
         )
     def extract_text(self, filepath: str, filetype: str) -> str:  # pragma: no cover - GPU/OCR runtime
@@ -76,8 +68,8 @@ class QwenVLProviderWrapper(OCRProvider):
 # Module-level singletons for caching
 _paddle_wrapper_cache = None
 _paddle_wrapper_lock = threading.Lock()
-_qwen_wrapper_cache = None
-_qwen_wrapper_lock = threading.Lock()
+_granite_wrapper_cache = None
+_granite_wrapper_lock = threading.Lock()
 
 
 def _get_paddle_wrapper(use_gpu: bool = True, lang: str = "en", use_angle_cls: bool = True):
@@ -95,103 +87,115 @@ def _get_paddle_wrapper(use_gpu: bool = True, lang: str = "en", use_angle_cls: b
     return _paddle_wrapper_cache[1]
 
 
-def _get_qwen_wrapper(server_url: str = "", model_id: str = "Qwen/Qwen2.5-VL-3B-Instruct",
-                      device: str = "", torch_dtype: str = "bfloat16",
-                      max_pixels: int = 128 * 28 * 28, load_in_4bit: bool = True):
-    """Get cached QwenVLProviderWrapper instance."""
-    global _qwen_wrapper_cache
-    key = (server_url, model_id, device, torch_dtype, max_pixels, load_in_4bit)
-    if _qwen_wrapper_cache is None or _qwen_wrapper_cache[0] != key:
-        with _qwen_wrapper_lock:
-            if _qwen_wrapper_cache is None or _qwen_wrapper_cache[0] != key:
-                if server_url:
-                    _qwen_wrapper_cache = (key, QwenVLProviderWrapper(server_url=server_url))
-                else:
-                    _qwen_wrapper_cache = (key, QwenVLProviderWrapper(
-                        model_id=model_id, device=device or None, torch_dtype=torch_dtype,
-                        max_pixels=max_pixels, load_in_4bit=load_in_4bit))
-    return _qwen_wrapper_cache[1]
+def _fix_windows_dll_path() -> None:
+    import os
+    import sys
+    if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+        try:
+            import site
+            for site_dir in site.getsitepackages():
+                torch_lib = os.path.join(site_dir, "torch", "lib")
+                if os.path.isdir(torch_lib):
+                    os.add_dll_directory(torch_lib)
+        except Exception:
+            pass
+
+
+def _get_granite_wrapper(model_id: str = "ibm-granite/granite-vision-4.1-4b",
+                          device: str = "", torch_dtype: str = "float16",
+                          load_in_4bit: bool = True):
+    """Get cached GraniteVisionProviderWrapper instance."""
+    global _granite_wrapper_cache
+    _fix_windows_dll_path()
+    # Wait for background preload to finish (avoids blocking on _MODEL_LOCK indefinitely).
+    # If the preload didn't finish in time, raise a clear error the frontend can surface.
+    try:
+        from gpu_manager import wait_for_granite_ready, _preload_started
+        if _preload_started:  # only wait if preload was actually kicked off
+            ready = wait_for_granite_ready(max_wait_seconds=60)
+            if not ready:
+                raise RuntimeError(
+                    "Granite Vision is still loading model weights. "
+                    "Please retry in 30 seconds — this only happens on first server start."
+                )
+    except RuntimeError:
+        raise  # re-raise user-facing errors
+    except Exception as e:
+        logger.warning("wait_for_granite_ready check failed: {}", e)
+
+    key = (model_id, device, torch_dtype, load_in_4bit)
+    if _granite_wrapper_cache is None or _granite_wrapper_cache[0] != key:
+        with _granite_wrapper_lock:
+            if _granite_wrapper_cache is None or _granite_wrapper_cache[0] != key:
+                try:
+                    _granite_wrapper_cache = (key, GraniteVisionProviderWrapper(
+                        model_id=model_id, device=device or "", torch_dtype=torch_dtype,
+                        load_in_4bit=load_in_4bit))
+                except Exception as e:
+                    logger.warning("Granite Vision wrapper failed to initialize: {}", e)
+                    _granite_wrapper_cache = (key, None)
+    return _granite_wrapper_cache[1]
 
 
 class AutoOCRProvider(OCRProvider):
     """
-    MedVault OCRProvider that auto-detects whether a document is HANDWRITTEN,
-    PRINTED_TEXT or TABLE and routes it to the right backend.
+    MedVault OCRProvider that routes documents to the right backend based on
+    explicit user doc_type hint (no ML classifier involved).
 
-    Routing policy (confidence-gated, see ``_classify``):
-        * HANDWRITTEN (only if the classifier is confident) -> Qwen2.5-VL.
-          When ``QWEN_VL_SERVER_URL`` is set, this runs as a GPU microservice
-          in a separate CUDA process (recommended — keeps torch-CUDA out of
-          this venv, which only has paddlepaddle-gpu). Otherwise it runs
-          in-process (requires torch with CUDA).
-        * TABLE       -> PaddleOCR PP-Structure on GPU.
+    Routing policy:
+        * TABLE       -> Granite Vision 4.1-4b (GPU, 4-bit).
         * PRINTED_TEXT-> PaddleOCR on GPU.
 
     Self-check + fallback: if the chosen engine returns empty / near-empty
-    text, the other engine is tried automatically (PaddleOCR <-> Qwen) so a
-    misclassification (e.g. a faint handwritten note sent to PaddleOCR) still
-    recovers instead of returning a blank report.
+    text, the other engine is tried automatically (Granite <-> PaddleOCR) so a
+    misrouted document still recovers.
     """
     # Valid user hint values (case-insensitive).  ``auto`` means "no hint —
-    # let the classifier decide" (the default / backward-compatible path).
-    _VALID_HINTS = {"auto", "printed", "printed_text", "table", "tabular", "handwritten"}
+    # raise (ML auto-classification is disabled)".
+    _VALID_HINTS = {"auto", "printed", "printed_text", "table", "tabular"}
 
-    def __init__(self, class_weights: str = "",
-                 paddle_endpoint: str = "", paddle_use_gpu: bool = True,
-                 paddle_lang: str = "en", paddle_use_angle_cls: bool = True,
-                 qwen_server_url: str = "", qwen_model_id: str = "Qwen/Qwen2.5-VL-3B-Instruct",
-                 qwen_device: str = "", qwen_torch_dtype: str = "bfloat16",
-                 qwen_max_pixels: int = 128 * 28 * 28, qwen_load_in_4bit: bool = True,
+    def __init__(self,
+                 paddle_use_gpu: bool = True,
+                 paddle_lang: str = "en",
+                 paddle_use_angle_cls: bool = True,
+                 granite_model_id: str = "ibm-granite/granite-vision-4.1-4b",
+                 granite_device: str = "",
+                 granite_torch_dtype: str = "float16",
+                 granite_load_in_4bit: bool = True,
                  doc_type_hint: str = ""):
-        # Classifier has been removed; we rely exclusively on doc_type_hint.
-        self._paddle_endpoint = paddle_endpoint
         self._paddle_cfg = dict(use_gpu=paddle_use_gpu, lang=paddle_lang, use_angle_cls=paddle_use_angle_cls)
-        # Prefer the microservice URL from the environment (true GPU path in a
-        # separate CUDA process). Defaults to in-process if unset.
-        self._qwen_server_url = qwen_server_url or os.environ.get("QWEN_VL_SERVER_URL", "") or ""
-        self._qwen_cfg = dict(model_id=qwen_model_id, device=qwen_device or "", torch_dtype=qwen_torch_dtype,
-                              server_url=self._qwen_server_url, max_pixels=qwen_max_pixels,
-                              load_in_4bit=qwen_load_in_4bit)
+        self._granite_cfg = dict(
+            model_id=granite_model_id,
+            device=granite_device or "",
+            torch_dtype=granite_torch_dtype,
+            load_in_4bit=granite_load_in_4bit,
+        )
         self.last_doc_type: str = "printed"
         self.last_confidence: float = 0.0
-        # Optional user-supplied document-type hint.  When set to a valid
-        # class label (``printed_text`` / ``table`` / ``handwritten``) the
-        # classifier is skipped entirely and the hint is trusted as the
-        # routing decision — this lets the UI give users an explicit choice
-        # while still falling back to the classifier when the hint is
-        # ``auto`` or empty.
         self._doc_type_hint = self._normalise_hint(doc_type_hint)
 
     @classmethod
     def _normalise_hint(cls, hint: str) -> str:
-        """Normalise a user hint to one of the 3 canonical labels or ``auto``."""
+        """Normalise a user hint to one of the 2 canonical labels or ``auto``."""
         if not hint:
             return "auto"
         h = hint.strip().lower()
         if h not in cls._VALID_HINTS:
             logger.warning("Unknown doc_type_hint '{}'; ignoring (using classifier)", h)
             return "auto"
-        # Map aliases to the canonical classifier labels.
-        if h == "printed":
+        if h in ("printed", "printed_text"):
             return "PRINTED_TEXT"
-        if h == "table" or h == "tabular":
+        if h in ("table", "tabular"):
             return "TABLE"
-        if h == "handwritten":
-            return "HANDWRITTEN"
-        return "auto"  # "auto" or "printed_text" (already canonical)
+        return "auto"  # "auto" fallback
 
-    # ── classification (confidence-gated) ──────────────────────────────────
+    # ── classification (hint-only) ─────────────────────────────────────────
     def _classify(self, filepath: str, filetype: str) -> tuple:
         """Return (doc_type, confidence) based purely on the explicit user hint."""
         if self._doc_type_hint == "auto":
             raise ValueError("doc_type must be explicitly provided — ML auto-classification is disabled")
         self.last_confidence = 1.0
         return self._doc_type_hint, 1.0
-
-    def _build_qwen(self):
-        if self._qwen_server_url:
-            return QwenVLProviderWrapper(server_url=self._qwen_server_url)
-        return _get_qwen_wrapper(**self._qwen_cfg)
 
     def _route(self, filepath: str, filetype: str) -> tuple:
         if getattr(self, "last_provider", None) is not None:
@@ -200,19 +204,23 @@ class AutoOCRProvider(OCRProvider):
         doc_type, _ = self._classify(filepath, filetype)
         self.last_doc_type = doc_type
 
-        if doc_type == "HANDWRITTEN":
-            # Qwen2.5-VL (GPU microservice when QWEN_VL_SERVER_URL is set).
-            self.last_provider = self._build_qwen()
-            return "HANDWRITTEN", self.last_provider
+        if doc_type == "TABLE":
+            granite = _get_granite_wrapper(**self._granite_cfg)
+            if granite is not None:
+                self.last_provider = granite
+                return "TABLE", granite
+            logger.error("Granite Vision unavailable for TABLE document; failing loudly (Paddle fallback disabled)")
+            raise RuntimeError("Granite Vision OCR provider is unavailable for TABLE document.")
 
-        # TABLE or PRINTED_TEXT -> PaddleOCR (PP-Structure for TABLE).
+        # PRINTED_TEXT -> PaddleOCR
         paddle = _get_paddle_wrapper(**self._paddle_cfg)
         if paddle is not None:
             self.last_provider = paddle
             return doc_type, self.last_provider
-        # PaddleOCR unavailable; fall back to Qwen for printed/table docs.
-        logger.warning("PaddleOCR unavailable for doc_type={}; falling back to Qwen-VL", doc_type)
-        self.last_provider = self._build_qwen()
+        # Paddle unavailable; fall back to Granite for printed docs
+        logger.warning("PaddleOCR unavailable for PRINTED_TEXT; falling back to Granite Vision")
+        granite = _get_granite_wrapper(**self._granite_cfg)
+        self.last_provider = granite
         return doc_type, self.last_provider
 
     @staticmethod
@@ -221,9 +229,7 @@ class AutoOCRProvider(OCRProvider):
         return not (text or "").strip()
 
     def extract_text(self, filepath: str, filetype: str, doc_type_hint: str = "") -> str:  # pragma: no cover - GPU/OCR runtime
-        # Reset cache on new extraction
         self.last_provider = None
-        # Per-call hint overrides the constructor-level hint (if any).
         if doc_type_hint:
             self._doc_type_hint = self._normalise_hint(doc_type_hint)
         doc_type, provider = self._route(filepath, filetype)
@@ -234,37 +240,33 @@ class AutoOCRProvider(OCRProvider):
             text = ""
             err = e
 
-        # Self-check: if the primary engine returned nothing (or a vision error
-        # string from a misconfigured Qwen endpoint), try the other engine.
+        # Self-check: if the primary engine returned nothing, try fallback if allowed.
         if self._is_empty(text) or _looks_like_vision_error(text):
-            other = "PaddleOCR" if doc_type == "HANDWRITTEN" else "Qwen-VL"
-            logger.warning(
-                "Primary OCR (%s) %s for %s; trying %s",
-                doc_type, "errored" if err else "returned empty", filepath, other,
-            )
-            if doc_type == "HANDWRITTEN":
-                self.last_doc_type = "PRINTED_TEXT"
-                paddle = _get_paddle_wrapper(**self._paddle_cfg)
-                self.last_provider = paddle
-                if paddle is not None:
-                    return paddle.extract_text(filepath, filetype)
+            if doc_type == "TABLE":
+                logger.error(
+                    "Granite Vision OCR (%s) %s for %s; failing loudly (Paddle fallback disabled for TABLE)",
+                    doc_type, "errored: " + str(err) if err else "returned empty text", filepath
+                )
+                if err:
+                    raise err
+                return text or ""
             else:
-                qwen = self._build_qwen()
-                self.last_provider = qwen
-                if qwen is not None:
+                logger.warning(
+                    "Primary OCR (PRINTED_TEXT) %s for %s; trying Granite Vision fallback",
+                    "errored" if err else "returned empty", filepath,
+                )
+                granite = _get_granite_wrapper(**self._granite_cfg)
+                self.last_provider = granite
+                if granite is not None:
                     try:
-                        return qwen.extract_text(filepath, filetype) or ""
+                        return granite.extract_text(filepath, filetype) or ""
                     except Exception as e2:  # noqa: BLE001
-                        logger.warning("Fallback Qwen-VL OCR also failed: {}", e2)
-            # If we got here, the fallback did not produce text either.
+                        logger.warning("Fallback Granite Vision OCR also failed: {}", e2)
             return text or ""
-        # Primary engine produced usable text.
         return text or ""
 
     def extract_structured(self, filepath: str, filetype: str, doc_type_hint: str = "") -> list:  # pragma: no cover - GPU/OCR runtime
-        # Uses cache from extract_text since it's called immediately after
         self.last_provider = None
-        # Per-call hint overrides the constructor-level hint (if any).
         if doc_type_hint:
             self._doc_type_hint = self._normalise_hint(doc_type_hint)
         doc_type, provider = self._route(filepath, filetype)
@@ -277,9 +279,8 @@ class AutoOCRProvider(OCRProvider):
         except Exception as e:  # noqa: BLE001 - fall back on any OCR failure
             err = e
         # If the primary engine produced nothing, try the other engine.
-        if doc_type == "HANDWRITTEN":
-            logger.warning("Handwritten structured OCR failed ({}); falling back to PaddleOCR", err or "empty")
-            self.last_doc_type = "PRINTED_TEXT"
+        if doc_type == "TABLE":
+            logger.warning("Granite structured OCR failed ({}); falling back to PaddleOCR", err or "empty")
             paddle = _get_paddle_wrapper(**self._paddle_cfg)
             self.last_provider = paddle
             provider = paddle
@@ -289,38 +290,35 @@ class AutoOCRProvider(OCRProvider):
             return self._heuristic_structured(text)
         return []
 
-    def _heuristic_structured(self, text: str) -> list:  # pragma: no cover - latent bug: RULES_CONFIG undefined
+    def _heuristic_structured(self, text: str) -> list:  # pragma: no cover
         """Fallback structured extraction using simple regex heuristics on plain text."""
-        import re
         from heuristics import extract_structured_results
         lines = [{"text": line, "bounding_box": []} for line in text.split("\n") if line.strip()]
-        return extract_structured_results(lines, RULES_CONFIG)
+        try:
+            from database import RULES_CONFIG
+            return extract_structured_results(lines, RULES_CONFIG)
+        except Exception:
+            return extract_structured_results(lines, None)
 
 
 OCR_ENGINES = {
     "auto": lambda cfg: AutoOCRProvider(
-        class_weights=cfg.get("class_weights", ""),
         paddle_use_gpu=cfg.get("paddle_use_gpu", True),
         paddle_lang=cfg.get("paddle_lang", "en"),
         paddle_use_angle_cls=cfg.get("paddle_use_angle_cls", True),
-        qwen_model_id=cfg.get("qwen_model_id", "Qwen/Qwen2.5-VL-3B-Instruct"),
-        qwen_device=cfg.get("qwen_device", ""),
-        qwen_torch_dtype=cfg.get("qwen_torch_dtype", "bfloat16"),
-        qwen_server_url=cfg.get("qwen_server_url", ""),
-        qwen_max_pixels=cfg.get("qwen_max_pixels", 128 * 28 * 28),
-        qwen_load_in_4bit=cfg.get("qwen_load_in_4bit", True),
+        granite_model_id=cfg.get("granite_model_id", "ibm-granite/granite-vision-4.1-4b"),
+        granite_device=cfg.get("granite_device", ""),
+        granite_torch_dtype=cfg.get("granite_torch_dtype", "float16"),
+        granite_load_in_4bit=cfg.get("granite_load_in_4bit", True),
     ),
     "pipeline": lambda cfg: AutoOCRProvider(
-        class_weights=cfg.get("class_weights", ""),
         paddle_use_gpu=cfg.get("paddle_use_gpu", True),
         paddle_lang=cfg.get("paddle_lang", "en"),
         paddle_use_angle_cls=cfg.get("paddle_use_angle_cls", True),
-        qwen_model_id=cfg.get("qwen_model_id", "Qwen/Qwen2.5-VL-3B-Instruct"),
-        qwen_device=cfg.get("qwen_device", ""),
-        qwen_torch_dtype=cfg.get("qwen_torch_dtype", "bfloat16"),
-        qwen_server_url=cfg.get("qwen_server_url", ""),
-        qwen_max_pixels=cfg.get("qwen_max_pixels", 128 * 28 * 28),
-        qwen_load_in_4bit=cfg.get("qwen_load_in_4bit", True),
+        granite_model_id=cfg.get("granite_model_id", "ibm-granite/granite-vision-4.1-4b"),
+        granite_device=cfg.get("granite_device", ""),
+        granite_torch_dtype=cfg.get("granite_torch_dtype", "float16"),
+        granite_load_in_4bit=cfg.get("granite_load_in_4bit", True),
     ),
 }
 

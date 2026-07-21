@@ -5,7 +5,7 @@
 1. **What is being built or changed?**
    - Update `.gitignore` to prevent temporary or non-essential test/UI audit artifacts from being tracked.
    - Stage and commit all active code changes in the working directory that are useful and related to the main pipeline.
-   - Push all commits (including past commits and new commits) safely to the target GitHub repository (`https://github.com/Shreyash-deve7/medical-ocr-pipeline.git`).
+   - Push all commits (including past commits and new commits) safely to the target GitHub repository (`https://github.com/aditya0si/pipeline_pr-tb.git`).
 
 2. **What does "done" look like?**
    - All pipeline-related modifications and new configurations/scripts are staged and committed.
@@ -44,7 +44,7 @@
 ### Session 3: Push Commits to Target Repository
 - **Objective**: Push all commits to the `dest` remote on the `main` branch.
 - **Scope**: `git push`
-- **Output**: Changes successfully pushed to `https://github.com/Shreyash-deve7/medical-ocr-pipeline.git`.
+- **Output**: Changes successfully pushed to `https://github.com/aditya0si/pipeline_pr-tb.git`.
 - **Connects to**: End of task.
 - **Failure Surface**: Push rejected due to branch conflicts or permission issues.
 

@@ -78,11 +78,10 @@ def patched_factories(monkeypatch):
         return factory
 
     fakes = {
-        "TABLE": _make("PaddleOCR-PP-Structure"),
-        "HANDWRITTEN": _make("Qwen2.5-VL"),
+        "TABLE": _make("Granite-Vision-4.1-4b"),
         "PRINTED_TEXT": _make("PaddleOCR-Basic"),
         "printed": _make("PaddleOCR-Basic"),
-        "handwritten": _make("Qwen2.5-VL"),
+        "tabular": _make("Granite-Vision-4.1-4b"),
     }
     monkeypatch.setattr(ocr_router_agent, "AGENT_FACTORIES", fakes)
     return records
@@ -90,14 +89,14 @@ def patched_factories(monkeypatch):
 
 def test_router_dispatches_table(patched_factories):
     res = run_ocr(_gray_image(), "TABLE")
-    assert res.engine == "PaddleOCR-PP-Structure"
-    assert patched_factories["PaddleOCR-PP-Structure"].called is True
+    assert res.engine == "Granite-Vision-4.1-4b"
+    assert patched_factories["Granite-Vision-4.1-4b"].called is True
 
 
-def test_router_dispatches_handwritten(patched_factories):
-    res = run_ocr(_gray_image(), "HANDWRITTEN")
-    assert res.engine == "Qwen2.5-VL"
-    assert patched_factories["Qwen2.5-VL"].called is True
+def test_router_dispatches_tabular(patched_factories):
+    res = run_ocr(_gray_image(), "TABLE")
+    assert res.engine == "Granite-Vision-4.1-4b"
+    assert patched_factories["Granite-Vision-4.1-4b"].called is True
 
 
 def test_router_dispatches_printed(patched_factories):
@@ -108,7 +107,7 @@ def test_router_dispatches_printed(patched_factories):
 
 def test_router_accepts_legacy_classes(patched_factories):
     assert run_ocr(_gray_image(), "printed").engine == "PaddleOCR-Basic"
-    assert run_ocr(_gray_image(), "handwritten").engine == "Qwen2.5-VL"
+    assert run_ocr(_gray_image(), "tabular").engine == "Granite-Vision-4.1-4b"
 
 
 def test_router_unknown_class_raises(patched_factories):
@@ -117,7 +116,7 @@ def test_router_unknown_class_raises(patched_factories):
 
 
 def test_dispatched_result_has_valid_metrics(patched_factories):
-    for cls in ("TABLE", "HANDWRITTEN", "PRINTED_TEXT"):
+    for cls in ("TABLE", "PRINTED_TEXT"):
         res = run_ocr(_gray_image(), cls)
         assert res.confidence > 0
         assert res.processing_time_seconds >= 0

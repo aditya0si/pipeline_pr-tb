@@ -39,7 +39,7 @@ def fake_ocr(monkeypatch):
     monkeypatch.setattr(
         ocr_router_agent, "AGENT_FACTORIES",
         {k: (lambda: _FakeOCRAgent()) for k in
-         ("TABLE", "HANDWRITTEN", "PRINTED_TEXT", "printed", "handwritten")},
+         ("TABLE", "PRINTED_TEXT", "printed", "tabular")},
     )
 
 
@@ -100,9 +100,8 @@ def test_run_pipeline_llm_free_returns_pipeline_result(tmp_path, fake_ocr):
 
     assert isinstance(result, PipelineResult)
     d = result.to_dict()
-    assert set(d) >= {"preprocessing", "classification", "lab_report",
+    assert set(d) >= {"preprocessing", "ocr", "lab_report",
                       "diagnosis", "metadata"}
-    assert d["classification"].get("class") in ("TABLE", "HANDWRITTEN", "PRINTED_TEXT")
     assert isinstance(d["lab_report"], dict)
     assert d["diagnosis"].get("summary_for_doctor")
     assert d["metadata"]["use_graph"] is True

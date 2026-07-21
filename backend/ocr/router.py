@@ -10,7 +10,6 @@ from typing import Dict, Any
 import numpy as np
 
 from .ocr1_table import extract_table
-from .ocr2_handwritten import extract_handwritten
 from .ocr3_printed import extract_printed_text
 
 
@@ -20,7 +19,7 @@ def run_ocr(preprocessed_image: np.ndarray, doc_class: str) -> Dict[str, Any]:
 
     Args:
         preprocessed_image: Preprocessed image as numpy array (BGR).
-        doc_class: One of 'TABLE', 'HANDWRITTEN', 'PRINTED_TEXT'.
+        doc_class: One of 'TABLE', 'PRINTED_TEXT'.
 
     Returns:
         {
@@ -35,7 +34,6 @@ def run_ocr(preprocessed_image: np.ndarray, doc_class: str) -> Dict[str, Any]:
 
     dispatch = {
         "TABLE": extract_table,
-        "HANDWRITTEN": extract_handwritten,
         "PRINTED_TEXT": extract_printed_text,
     }
 

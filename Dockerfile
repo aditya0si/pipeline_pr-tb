@@ -11,7 +11,7 @@ WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install bitsandbytes for Qwen-VL 4-bit quantization support
+# Install bitsandbytes for Granite Vision 4-bit NF4 quantization support
 RUN pip install --no-cache-dir "bitsandbytes>=0.46.1"
 
 COPY backend/ ./

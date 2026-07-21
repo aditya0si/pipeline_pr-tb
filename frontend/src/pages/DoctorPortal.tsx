@@ -7,7 +7,7 @@ interface Props {
   onOpenChart?: (patientId: string) => void;
 }
 
-const PIPELINE_STAGES = ["Preprocess", "Classify", "OCR", "Extract + Diagnose"];
+const PIPELINE_STAGES = ["Preprocess", "OCR", "Extract + Diagnose"];
 
 const flagClass = (flag?: string) =>
   ({
@@ -22,7 +22,6 @@ const flagClass = (flag?: string) =>
 const classClass = (cls?: string) =>
   ({
     TABLE: "cls-table",
-    HANDWRITTEN: "cls-handwritten",
     PRINTED_TEXT: "cls-printed",
   }[cls || ""] || "cls-unknown");
 
@@ -333,47 +332,15 @@ function PipelineStrip({ running, done }: { running?: boolean; done?: boolean })
 }
 
 function PipelineAccordion({ result }: { result: api.PipelineResult }) {
-  const cls = result.classification;
   const lab = result.lab_report?.lab_results || [];
   const dx = result.diagnosis;
   const pre = result.preprocessing;
 
   return (
     <div className="pipeline-accordion">
-      {/* Panel 1 — Classification */}
+      {/* Panel 1 — OCR Text */}
       <details className="acc-panel" open>
-        <summary><span className="acc-num">1</span> Classification Result</summary>
-        <div className="acc-body">
-          {cls ? (
-            <>
-              <div className="class-row">
-                <span className={`class-chip ${classClass(cls.class)}`}>{cls.class || "UNKNOWN"}</span>
-                <span className="confidence">
-                  <span className="confidence-label">Confidence</span>
-                  <span className="confidence-track">
-                    <span className="confidence-fill" style={{ width: `${Math.round((cls.confidence || 0) * 100)}%` }} />
-                  </span>
-                  <span className="confidence-val">{Math.round((cls.confidence || 0) * 100)}%</span>
-                </span>
-              </div>
-              {cls.fallback_triggered && <div className="fallback-note">⚠ Classifier fallback triggered</div>}
-              <div className="badge-row">
-                <span className="badge-label">Preprocessing transforms:</span>
-                {(pre?.transformations_applied || []).map((t: string, i: number) => (
-                  <span className="transform-badge" key={i}>{t}</span>
-                ))}
-                {(!pre?.transformations_applied || pre.transformations_applied.length === 0) && <span className="muted">none</span>}
-              </div>
-            </>
-          ) : (
-            <div className="muted">No classification result.</div>
-          )}
-        </div>
-      </details>
-
-      {/* Panel 2 — OCR Text */}
-      <details className="acc-panel" open>
-        <summary><span className="acc-num">2</span> OCR Text</summary>
+        <summary><span className="acc-num">1</span> OCR Text</summary>
         <div className="acc-body">
           {(() => {
             const ocr = result.ocr;
@@ -417,9 +384,9 @@ function PipelineAccordion({ result }: { result: api.PipelineResult }) {
         </div>
       </details>
 
-      {/* Panel 3 — Extracted Lab Results */}
+      {/* Panel 2 — Extracted Lab Results */}
       <details className="acc-panel" open>
-        <summary><span className="acc-num">3</span> Extracted Lab Results</summary>
+        <summary><span className="acc-num">2</span> Extracted Lab Results</summary>
         <div className="acc-body">
           {lab.length > 0 ? (
             <div className="lab-table-wrap">
@@ -456,9 +423,9 @@ function PipelineAccordion({ result }: { result: api.PipelineResult }) {
         </div>
       </details>
 
-      {/* Panel 4 — AI Diagnosis */}
+      {/* Panel 3 — AI Diagnosis Summary */}
       <details className="acc-panel" open>
-        <summary><span className="acc-num">4</span> AI Diagnosis Summary</summary>
+        <summary><span className="acc-num">3</span> AI Diagnosis Summary</summary>
         <div className="acc-body">
           {dx ? (
             <>

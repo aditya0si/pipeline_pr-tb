@@ -18,13 +18,13 @@ Set-Location ..
 
 Write-Host "[4/4] Starting servers..."
 Write-Host ""
-Write-Host "  Backend:  http://localhost:3000"
-Write-Host "  Frontend: http://localhost:3001"
+Write-Host "  Backend:  http://localhost:3002"
+Write-Host "  Frontend: http://localhost:3003"
 Write-Host ""
 
-$backend = Start-Process -NoNewWindow -FilePath "powershell.exe" -ArgumentList "-Command", ".\.venv\Scripts\uvicorn.exe backend.main:app --host 0.0.0.0 --port 3000 --reload" -PassThru
+$backend = Start-Process -NoNewWindow -FilePath "powershell.exe" -ArgumentList "-Command", "$env:TRANSFORMERS_OFFLINE='1'; $env:HF_HUB_DISABLE_SYMLINKS_WARNING='1'; .\.venv\Scripts\uvicorn.exe backend.main:app --host 0.0.0.0 --port 3002 --timeout-keep-alive 300 --reload" -PassThru
 Set-Location frontend
-$frontend = Start-Process -NoNewWindow -FilePath "npx.cmd" -ArgumentList "vite --port 3001" -PassThru
+$frontend = Start-Process -NoNewWindow -FilePath "npx.cmd" -ArgumentList "vite --port 3003" -PassThru
 Set-Location ..
 
 try {

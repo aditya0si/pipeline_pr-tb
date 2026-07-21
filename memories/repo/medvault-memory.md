@@ -1,6 +1,12 @@
 # MedVault — Project Memory
 
 > Consolidated from 5 source files. Last updated: 2026-07-13.
+>
+> **⚠️ ARCHITECTURE CHANGE (2026-07-19):** The ML classifier and handwritten OCR
+> path have been REMOVED. The pipeline now uses **user-selected doc_type**
+> (`printed` → PaddleOCR, `tabular` → Granite Vision 4.1-4b). Qwen2.5-VL, Surya,
+> and the 3-class classifier are DEPRECATED. Sections below marked "[HISTORICAL]"
+> describe the old architecture and are kept for reference only.
 
 ---
 
@@ -196,7 +202,7 @@ Mojibake `Âµmol/L` (UTF-8 double-encode) is explicitly collapsed in `unit_norm
 - PP-Structure warmup — not yet wired into app lifespan (deferred to Session 8)
 ---
 
-## Classifier Rework � Held-out Eval & Synthetic-Test Reconciliation (2026-07-18)
+## Classifier Rework � Held-out Eval & Synthetic-Test Reconciliation (2026-07-18)
 
 ### Goal / Constraints
 - Improve 3-class classifier (TABLE / HANDWRITTEN / PRINTED_TEXT) toward ensemble
@@ -204,9 +210,9 @@ Mojibake `Âµmol/L` (UTF-8 double-encode) is explicitly collapsed in `unit_norm
 - Do NOT touch OCR engines or extraction rules. Keep the ensemble
   (CNN + heuristic + optional LLM); heuristic is the stronger leg.
 - Env: Python 3.12 venv at `pipeline_v1/.venv`; torch CUDA unavailable (CPU only).
-  NIM hangs; Qwen needs external microservice � LLM fallback can only be WIRED, not run.
+  NIM hangs; Qwen needs external microservice � LLM fallback can only be WIRED, not run.
 
-### Data hygiene (Phase 1) � done
+### Data hygiene (Phase 1) � done
 - `scripts/make_splits.py` -> `backend/dataset_splits.json` (stratified 70/15/15,
   seed=42) + `scripts/eval_classifier.py` (5-fold CV -> `backend/eval_report.json`).
 - FIXED `backend/labels.json` path bug: folder was `WhatsApp Unknown 2026-04-27 at
@@ -219,14 +225,14 @@ Mojibake `Âµmol/L` (UTF-8 double-encode) is explicitly collapsed in `unit_norm
   WeightedRandomSampler) -> `backend/weights/classifier_3class.pth`, best val 71.4%.
   CNN alone is WEAK and was HURTING the ensemble.
 
-### Heuristics (Phase 3) � done
+### Heuristics (Phase 3) � done
 - `backend/classifier/heuristics.py` v2: 15 features (added `line_straightness`,
   `ink_irregularity`); `compute_features` / `score_features` + class-balanced
   logistic retune via `scripts/tune_weights.py` (writes `_FEATURE_MEAN/_STD/_W/_B`).
 - Result after retune: HANDWRITTEN recall 100% (9/9 full set), TABLE 84%,
   PRINTED_TEXT 65%.
 
-### CRITICAL FINDING � TABLE vs PRINTED_TEXT overlap
+### CRITICAL FINDING � TABLE vs PRINTED_TEXT overlap
 - `grid_score` / line-count features do NOT separate TABLE from PRINTED_TEXT. Real
   PRINTED lab-reports AND ultrasound sheets are themselves heavily gridded
   (e.g. `20260612_111355.jpg` 60H+567V, `IMG_3903` 163H+37V). Any

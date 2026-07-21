@@ -2,43 +2,42 @@
 
 ## SECTION A — GOAL DEFINITION
 
-### 1. What is being built or changed?
-No code modifications or database changes will be performed. The goal is to start the existing MedVault backend (FastAPI/Uvicorn) and frontend (React/Vite) servers, verify they are running, and provide the user with the correct links.
+1. **What is being built or changed?**
+   No source code or database schema changes will be performed. The goal is to start the existing MedVault backend (FastAPI/Uvicorn on port 3000) and frontend (React/Vite on port 3001) servers, verify their status, and provide the user with accessible links.
 
-### 2. What does "done" look like?
-- Backend server is running at `http://localhost:8000`.
-- Frontend server is running at `http://localhost:5173`.
-- Links are shared with the user.
+2. **What does "done" look like?**
+   - Backend FastAPI server running on `http://localhost:3000` (docs at `http://localhost:3000/docs`).
+   - Frontend React/Vite server running on `http://localhost:3001`.
+   - Access URLs provided to the user.
 
-### 3. What is explicitly out of scope for this task?
-Any edits to code, design refactoring, database schema migration, or new feature additions, unless we encounter startup errors.
+3. **What is explicitly out of scope for this task?**
+   Code modifications, feature development, or database migrations (unless startup errors require immediate fixes).
 
 ---
 
 ## SECTION B — TECH STACK
 
-This task runs the existing stack:
-- **Backend**: FastAPI with Python 3.12 within a `.venv` virtual environment.
-- **Frontend**: React SPA running via Vite.
-- **Commands**: PowerShell commands execution in background tasks.
+- **Backend**: FastAPI / Uvicorn running under Python virtual environment (`.venv`).
+- **Frontend**: React + Vite (Node.js / npm).
+- **Execution Environment**: Windows PowerShell (`start.ps1` or explicit background tasks for backend & frontend).
 
 ---
 
 ## SECTION C — SESSION MODULARIZATION
 
-### Session 1: Run Servers
-- **Objective**: Start the backend and frontend servers.
-- **Scope**: Start uvicorn backend and vite frontend.
-- **Output**: Two running background processes for backend and frontend.
-- **Connects to**: Verification and sharing of URLs.
-- **Failure Surface**: Port conflict (port 8000 or 5173 already bound), missing Python/Node dependencies, or missing configuration files (e.g. SQLite database).
+### Session 1: Server Initialization & Link Provision
+- **OBJECTIVE**: Launch backend and frontend servers on ports 3000 and 3001 respectively, verify availability, and output access links.
+- **SCOPE**: `pipeline_v1/start.ps1`, backend uvicorn process, frontend vite process.
+- **OUTPUT**: Active backend (port 3000) and frontend (port 3001) processes.
+- **CONNECTS TO**: End user interaction with the running web application.
+- **FAILURE SURFACE**: Port conflicts on 3000/3001, missing dependencies in `.venv` or `node_modules`, environment `.env` file missing.
 
 ---
 
 ## SECTION D — PROGRESS CHECKLIST
 
-- [x] Session 1: Run Servers
-  - [x] Copy `.env.example` to `.env` if `.env` does not exist
-  - [x] Start FastAPI Backend server (port 8000)
-  - [x] Start React/Vite Frontend server (port 5173)
-  - [x] Verify both servers are running and return the links
+- [x] Session 1: Server Initialization & Link Provision
+  - [x] Execute server startup script (`start.ps1` or background processes)
+  - [x] Confirm Backend is responding on `http://localhost:3000`
+  - [x] Confirm Frontend is responding on `http://localhost:3001`
+  - [x] Provide active links to the user

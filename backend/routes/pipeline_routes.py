@@ -2,7 +2,7 @@
 backend/routes/pipeline_routes.py — POST /api/pipeline/run (Session 8).
 
 The unified entry-point that orchestrates the full agentic DAG
-(preprocess -> classify -> OCR router -> extract -> validate -> diagnose ->
+(preprocess -> OCR router -> extract -> validate -> diagnose ->
 [summary] -> [evaluate]) over an uploaded medical-lab image and returns a single
 ``PipelineResult`` JSON.
 
@@ -11,7 +11,7 @@ The heavy OCR / LLM paths live behind the existing offline agents (faked via
 LLM-free / network-free / GPU-free. A malformed upload returns 400 — never 500.
 
 Also exposes ``/api/gpu/status`` and ``/api/gpu/preload`` so the frontend can
-monitor and trigger GPU model loading (classifier CNN + PaddleOCR + Qwen-VL).
+monitor and trigger GPU model loading (PaddleOCR + Granite Vision).
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def gpu_status_endpoint():
 
 @router.post("/api/gpu/preload")
 def gpu_preload_endpoint():
-    """Trigger eager GPU model preloading (classifier + PaddleOCR + Qwen-VL).
+    """Trigger eager GPU model preloading (PaddleOCR + Granite Vision).
 
     Returns immediately; loading runs in a background thread. Poll
     ``/api/gpu/status`` to track progress.
@@ -41,25 +41,20 @@ def gpu_preload_endpoint():
     return {"status": "preload_started", "message": "Models are loading in the background. Poll /api/gpu/status for progress."}
 
 
-@router.post("/api/pipeline/run")
+@router.post("/api/pipeline/run", status_code=202)
 async def run_pipeline_endpoint(
     file: UploadFile = File(...),
     evaluate: bool = Form(False, description="Merge Agent 7 evaluation metrics"),
     summary: bool = Form(False, description="Attach a doctor-facing summary"),
     use_graph: bool = Form(True, description="Orchestrate via the PipelineGraph DAG"),
     report_id: str = Form("", description="Optional: reuse stored OCR text for this report id instead of re-running OCR"),
+    doc_type: str = Form("", description="Optional: explicit doc_type hint ('printed' or 'tabular')"),
 ):
     """
-    Run the full pipeline over a multipart image upload.
+    Start full pipeline execution asynchronously over a multipart image upload.
 
-    :returns: a ``PipelineResult`` JSON (preprocessing + classification +
-        extracted LabReport + validation + diagnosis; summary/evaluation optional).
-
-    When ``report_id`` is provided and the background upload task already
-    produced OCR text for that report (``reports.ocr_text`` non-empty,
-    ``status='done'``), the pipeline reuses the stored text and skips the
-    expensive OCR step — making the doctor's "Run Pipeline" near-instant
-    instead of re-running OCR on a cold GPU.
+    Returns HTTP 202 ``{"job_id": "<uuid>", "status": "pending"}`` immediately.
+    Poll ``GET /api/pipeline/run/status/{job_id}`` to retrieve progress and completion results.
     """
     if file is None:
         raise HTTPException(status_code=400, detail="No image file provided")
@@ -68,17 +63,49 @@ async def run_pipeline_endpoint(
     if not content:
         raise HTTPException(status_code=400, detail="Empty image file")
 
-    # Lazy import keeps the router importable without loading OCR/agent deps.
-    try:
-        from services.pipeline_service import run_pipeline
-        result = run_pipeline(
-            content,
-            evaluate=evaluate,
-            summary=summary,
-            use_graph=use_graph,
-            report_id=report_id or None,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Pipeline failed: {e}")
+    # Cold-start check: if tabular requested while Granite is preloading, return 503 immediately
+    norm_doc = (doc_type or "").strip().lower()
+    if norm_doc in ("tabular", "table"):
+        try:
+            from gpu_manager import gpu_status, _preload_started
+            st = gpu_status()
+            if _preload_started and not st.granite_loaded:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Granite Vision model is currently loading weights on GPU. Please retry in 30 seconds."
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
-    return result.to_dict()
+    import threading
+    import uuid
+    from services.pipeline_service import run_pipeline_async
+
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=run_pipeline_async,
+        args=(job_id, content, evaluate, summary, use_graph, report_id or None, doc_type or ""),
+        daemon=True,
+    )
+    thread.start()
+
+    return {"job_id": job_id, "status": "pending", "message": "Pipeline execution started asynchronously."}
+
+
+@router.get("/api/pipeline/run/status/{job_id}")
+def get_pipeline_job_status(job_id: str):
+    """Return current status and result for an asynchronous pipeline job."""
+    from services.pipeline_service import get_job_state
+    state = get_job_state(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Pipeline job '{job_id}' not found")
+    return {
+        "job_id": job_id,
+        "status": state["status"],
+        "result": state.get("result"),
+        "error": state.get("error"),
+        "started_at": state.get("started_at"),
+        "completed_at": state.get("completed_at"),
+    }

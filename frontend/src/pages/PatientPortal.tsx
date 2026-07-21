@@ -113,11 +113,6 @@ export function PatientPortal({ onBack, notify }: Props) {
               <div style={{ fontWeight: 600 }}>Tabular</div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Tables / lab panels</div>
             </button>
-            <button className="neu-btn" style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleUpload(pendingFile, "handwritten"); }}>
-              <div style={{ fontSize: 24, marginBottom: 8 }}>✍️</div>
-              <div style={{ fontWeight: 600 }}>Handwritten</div>
-              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Doctor notes</div>
-            </button>
           </div>
         </div>
       ) : (

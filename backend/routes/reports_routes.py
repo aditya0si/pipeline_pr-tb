@@ -67,8 +67,8 @@ async def upload_report(
             raise HTTPException(400, f"Only PDF and image files accepted. Got: {ext or 'no extension'}")
             
         # Validate doc_type
-        if doc_type not in {"printed", "tabular", "handwritten"}:
-            raise HTTPException(422, f"Invalid doc_type. Expected 'printed', 'tabular', or 'handwritten', got: {doc_type}")
+        if doc_type not in {"printed", "tabular"}:
+            raise HTTPException(422, f"Invalid doc_type. Expected 'printed' or 'tabular', got: {doc_type}")
         
         # Read and validate file content
         content = await file.read()
@@ -105,7 +105,7 @@ async def upload_report(
             conn.close()
         
         # Kick off automatic OCR in a daemon thread (printed→PaddleOCR,
-        # handwritten→Qwen-VL).  We deliberately use a bare thread instead of
+        # tabular→Granite Vision).  We deliberately use a bare thread instead of
         # FastAPI's BackgroundTasks so the heavy synchronous OCR work does not
         # block the ASGI worker thread (which starves subsequent requests and
         # causes "Failed to fetch" in the frontend).
@@ -156,7 +156,7 @@ def analyze_report(req: AnalyzeReq):
     filepath = row["filepath"]
     filetype = row["filetype"]
 
-    ocr = AutoOCRProvider()
+    ocr = AutoOCRProvider(doc_type_hint=row["doc_type"] or "printed")
 
     ai_row = _get_provider_row(conn, req.ai_provider_id, "ai")
     if ai_row:
@@ -173,7 +173,7 @@ def analyze_report(req: AnalyzeReq):
         ocr_text = ocr.extract_text(filepath, filetype)
         doc_type = getattr(ocr, "last_doc_type", "printed")
         structured = ocr.extract_structured(filepath, filetype) if hasattr(ocr, "extract_structured") else []
-        ocr_engine = type(ocr).__name__
+        ocr_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else type(ocr).__name__
         images = _extract_images(filepath, filetype)
         analysis = ai.analyze(MEDICAL_PROMPT, ocr_text, images)
         conn.execute(
@@ -215,14 +215,15 @@ def ocr_structured_report(req: StructuredOCRReq):
     filepath = row["filepath"]
     filetype = row["filetype"]
 
-    ocr = AutoOCRProvider()
+    ocr = AutoOCRProvider(doc_type_hint=row["doc_type"] or "printed")
 
     try:
         ocr_text = ocr.extract_text(filepath, filetype)
         doc_type = getattr(ocr, "last_doc_type", "printed")
         structured = ocr.extract_structured(filepath, filetype) if hasattr(ocr, "extract_structured") else []
+        ocr_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else type(ocr).__name__
         conn.close()
-        return {"ocr_text": ocr_text, "structured_results": structured, "doc_type": doc_type, "ocr_engine": type(ocr).__name__}
+        return {"ocr_text": ocr_text, "structured_results": structured, "doc_type": doc_type, "ocr_engine": ocr_engine}
     except HTTPException:
         conn.close()
         raise
@@ -270,8 +271,8 @@ async def test_upload_report(
             raise HTTPException(400, f"Only PDF and image files accepted. Got: {ext or 'no extension'}")
 
         # Validate doc_type
-        if doc_type not in {"printed", "tabular", "handwritten"}:
-            raise HTTPException(422, f"Invalid doc_type. Expected 'printed', 'tabular', or 'handwritten', got: {doc_type}")
+        if doc_type not in {"printed", "tabular"}:
+            raise HTTPException(422, f"Invalid doc_type. Expected 'printed' or 'tabular', got: {doc_type}")
 
         content = await file.read()
         if len(content) == 0:
@@ -303,7 +304,7 @@ async def test_upload_report(
             conn.close()
 
         # Kick off automatic OCR in a daemon thread (printed→PaddleOCR,
-        # handwritten→Qwen-VL).  We deliberately use a bare thread instead of
+        # tabular→Granite Vision).  We deliberately use a bare thread instead of
         # FastAPI's BackgroundTasks so the heavy synchronous OCR work does not
         # block the ASGI worker thread (which starves subsequent requests and
         # causes "Failed to fetch" in the frontend).

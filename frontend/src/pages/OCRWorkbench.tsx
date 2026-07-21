@@ -77,8 +77,8 @@ const MOCK_FILES: MockFile[] = [
 
 const ENGINES: OCREngine[] = [
   { id: "paddleocr", name: "PaddleOCR", accuracy: 91, languages: ["en", "zh", "ja", "ko", "de", "fr"], capabilities: ["Table recognition", "Layout analysis", "Lightweight", "Printed (GPU)"] },
-  { id: "qwen_vl", name: "Qwen2.5-VL", accuracy: 93, languages: ["Multimodal"], capabilities: ["Handwritten", "Vision-Language", "GPU"] },
-  { id: "pipeline", name: "MedVault Dual Pipeline", accuracy: 0, languages: ["Auto"], capabilities: ["Printed→PaddleOCR", "Handwritten→Qwen-VL", "Document classifier"] },
+  { id: "granite", name: "Granite Vision 4.1", accuracy: 0, languages: ["Multimodal"], capabilities: ["Tabular", "Vision-Language", "GPU"] },
+  { id: "pipeline", name: "MedVault Dual Pipeline", accuracy: 0, languages: ["Auto"], capabilities: ["Printed→PaddleOCR", "Tabular→Granite Vision"] },
 ];
 
 const INITIAL_PIPELINE: PipelineStep[] = [
@@ -241,12 +241,7 @@ export function OCRWorkbench({ onBack, notify }: Props) {
             <button className="neu-btn" style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleRealUpload(pendingFile, "tabular"); }}>
               <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
               <div style={{ fontWeight: 600 }}>Tabular</div>
-              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Tables / lab panels (PaddleOCR)</div>
-            </button>
-            <button className="neu-btn" style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleRealUpload(pendingFile, "handwritten"); }}>
-              <div style={{ fontSize: 24, marginBottom: 8 }}>✍️</div>
-              <div style={{ fontWeight: 600 }}>Handwritten</div>
-              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Doctor notes (Qwen2.5-VL)</div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Tables / lab panels (Granite Vision)</div>
             </button>
           </div>
         </div>
@@ -309,8 +304,8 @@ export function OCRWorkbench({ onBack, notify }: Props) {
           </div>
           <span style={{ fontSize: 14, opacity: 0.3 }}>OR</span>
           <div className="neu" style={{ padding: "12px 20px", borderRadius: 8, borderLeft: "4px solid #a78bfa" }}>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>Handwritten → Qwen2.5-VL</div>
-            <div style={{ fontSize: 11, opacity: 0.6 }}>3B · 4-bit GPU · Vision-Language</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Tabular → Granite Vision 4.1</div>
+            <div style={{ fontSize: 11, opacity: 0.6 }}>4-bit NF4 · GPU · Vision-Language</div>
           </div>
         </div>
         <div style={{ fontSize: 12, opacity: 0.5, marginTop: 16 }}>

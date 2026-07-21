@@ -6,9 +6,7 @@ PRINTED_OCR_URL, default http://127.0.0.1:8001/ocr, as a multipart file upload
 and expects back {"text": <extracted text>, ...}.
 
 This server fills that gap. It runs PaddleOCR on the **GPU** using the native
-CUDA 12.9 wheel (WORKING_GPU_SETUP.md) — no CPU fallback needed. Paddle (printed)
-and Qwen2.5-VL (handwritten, :8002) run in SEPARATE processes (Hard Rule #2), so
-enabling GPU here does not conflict with the handwritten backend.
+CUDA 12.9 wheel (WORKING_GPU_SETUP.md) — no CPU fallback needed.
 
 Run:
     ..\\venv\\Scripts\\python.exe print_ocr_server.py

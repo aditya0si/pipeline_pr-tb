@@ -2,8 +2,8 @@
 
 Implements the "Automatic Background Task" described in goal.md (section 2, step 3):
 when a patient uploads a report, ``process_report_automatic`` runs in a daemon
-thread, classifies + routes the document through ``AutoOCRProvider`` (PaddleOCR for
-PRINTED_TEXT/TABLE, Qwen2.5-VL for HANDWRITTEN), and persists the raw OCR text back
+thread, routes the document through ``AutoOCRProvider`` (PaddleOCR for
+PRINTED_TEXT, Granite Vision for TABLE), and persists the raw OCR text back
 to the ``reports`` row so the doctor can see it on the dashboard.
 
 Also exposes ``run_pipeline`` for the unified ``POST /api/pipeline/run`` entrypoint
@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -138,6 +139,15 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
                     (ocr_text or "", doc_type, ocr_engine, duration, report_id),
                 )
                 conn.commit()
+                if not (ocr_text or "").strip():
+                    # Granite returned empty text — mark as failed so run_pipeline
+                    # doesn't silently reuse an empty result and skips re-OCR.
+                    conn = get_db()
+                    conn.execute("UPDATE reports SET status='failed', error='OCR returned empty text' WHERE id=?", (report_id,))
+                    conn.commit()
+                    conn.close()
+                    logger.warning("process_report_automatic: {} OCR returned empty — marked failed", report_id)
+                    return {"report_id": report_id, "status": "failed", "error": "OCR returned empty text"}
                 logger.info("process_report_automatic: {} done in {:.2f}s ({}, {})",
                             report_id, duration, doc_type, ocr_engine)
                 return {"report_id": report_id, "status": "done", "doc_type": doc_type,
@@ -166,9 +176,56 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
     return {"report_id": report_id, "status": "failed", "error": "exhausted retries"}
 
 
+# ── In-process pipeline job registry ──────────────────────────────────────────
+_PIPELINE_JOBS: dict[str, dict] = {}
+_PIPELINE_JOBS_LOCK = threading.Lock()
+
+
+def run_pipeline_async(job_id: str, content: bytes, evaluate: bool = False, summary: bool = False,
+                       use_graph: bool = True, report_id: str | None = None,
+                       doc_type_hint: str = "") -> None:
+    """Run pipeline execution in a background thread and record state in job registry."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _PIPELINE_JOBS_LOCK:
+        _PIPELINE_JOBS[job_id] = {
+            "status": "running",
+            "result": None,
+            "error": None,
+            "started_at": now,
+            "completed_at": None,
+        }
+
+    try:
+        res = run_pipeline(content, evaluate=evaluate, summary=summary,
+                           use_graph=use_graph, report_id=report_id,
+                           doc_type_hint=doc_type_hint)
+        completed = datetime.now(timezone.utc).isoformat()
+        with _PIPELINE_JOBS_LOCK:
+            _PIPELINE_JOBS[job_id]["status"] = "done"
+            _PIPELINE_JOBS[job_id]["result"] = res.to_dict()
+            _PIPELINE_JOBS[job_id]["completed_at"] = completed
+    except Exception as e:
+        logger.error("Async pipeline job {} failed: {}", job_id, e)
+        completed = datetime.now(timezone.utc).isoformat()
+        with _PIPELINE_JOBS_LOCK:
+            _PIPELINE_JOBS[job_id]["status"] = "failed"
+            _PIPELINE_JOBS[job_id]["error"] = str(e)
+            _PIPELINE_JOBS[job_id]["completed_at"] = completed
+
+
+def get_job_state(job_id: str) -> dict | None:
+    """Return a shallow copy of the job state for job_id, or None if unknown."""
+    with _PIPELINE_JOBS_LOCK:
+        job = _PIPELINE_JOBS.get(job_id)
+        if job:
+            return dict(job)
+    return None
+
+
 # ── unified pipeline entrypoint (POST /api/pipeline/run) ──────────────────────
 def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
-                 use_graph: bool = True, report_id: str | None = None) -> PipelineResult:
+                 use_graph: bool = True, report_id: str | None = None,
+                 doc_type_hint: str = "") -> PipelineResult:
     """Run the full MedVault OCR pipeline over raw image bytes.
 
     Returns a ``PipelineResult`` exposing ``.to_dict()`` so the endpoint in
@@ -192,7 +249,18 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
     import tempfile
     from pathlib import Path
 
-    suffix = ".png"
+    # Detect actual image format so temp file has the correct extension.
+    # cv2.imread() and PIL both infer codec from extension; saving JPEG bytes
+    # as .png would cause silent decode failures / garbled images.
+    _sig = content[:4] if len(content) >= 4 else b''
+    if _sig[:2] == b'\xff\xd8':
+        suffix = ".jpg"   # JPEG
+    elif _sig[:4] == b'\x89PNG':
+        suffix = ".png"   # PNG
+    elif _sig[:4] in (b'RIFF', b'WEBP'):
+        suffix = ".webp"  # WebP
+    else:
+        suffix = ".png"   # safe default
     tmp = Path(tempfile.gettempdir()) / f"medvault_run_{int(time.time()*1000)}{suffix}"
     tmp.write_bytes(content)
 
@@ -216,9 +284,15 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
                 finally:
                     conn.close()
                 if row:
-                    stored_text = (row["ocr_text"] or "").strip() if "ocr_text" in row.keys() else ""
                     stored_status = row["status"] if "status" in row.keys() else ""
-                    if stored_text and stored_status != "failed":
+                    stored_text = (row["ocr_text"] or "").strip() if "ocr_text" in row.keys() else ""
+                    # Only reuse if status='done' AND we actually have text.
+                    # If status='processing': the upload background thread is
+                    # still running OCR — don't race with it, fall through to
+                    # fresh OCR below (which will wait on the model ready guard).
+                    # If status='done' but text is empty: Granite returned nothing
+                    # on the background run — retry fresh OCR now.
+                    if stored_text and stored_status == "done":
                         ocr_text = stored_text
                         doc_type = row["doc_type"] or "printed"
                         ocr_engine = row["ocr_engine"] or ocr_engine
@@ -231,7 +305,22 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
         # ── Run OCR only when we don't have stored text ───────────────────
         if not reused:
             from services.ocr_service import AutoOCRProvider
-            ocr = AutoOCRProvider()
+            
+            hint_doc_type = doc_type_hint or "auto"
+            if report_id:
+                try:
+                    from database import get_db
+                    conn = get_db()
+                    try:
+                        row = conn.execute("SELECT doc_type FROM reports WHERE id=?", (report_id,)).fetchone()
+                        if row and row["doc_type"]:
+                            hint_doc_type = row["doc_type"]
+                    finally:
+                        conn.close()
+                except Exception as e:
+                    logger.warning("run_pipeline: doc_type lookup for hint failed: {}", e)
+            
+            ocr = AutoOCRProvider(doc_type_hint=hint_doc_type)
             try:
                 ocr_text = ocr.extract_text(str(tmp), "image")
                 doc_type = getattr(ocr, "last_doc_type", "printed")
@@ -239,10 +328,14 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
             except Exception as e:  # noqa: BLE001 - surface as a result, don't crash the endpoint
                 logger.warning("run_pipeline: OCR failed: {}", e)
 
-            # Reuse the existing agentic DAG when present (full preprocess->classify->
-            # OCR->extract->validate->diagnose->[summary]->[evaluate] flow).
+            # Run structured extraction only for PRINTED_TEXT docs.
+            # For TABLE docs Granite Vision already ran full inference above;
+            # calling extract_structured would run a second full model inference
+            # (doubling GPU time). The heuristic fallback in AutoOCRProvider
+            # uses the already-extracted ocr_text instead.
             try:
-                if hasattr(ocr, "extract_structured"):
+                resolved_doc = getattr(ocr, "last_doc_type", hint_doc_type)
+                if hasattr(ocr, "extract_structured") and resolved_doc != "TABLE":
                     structured = ocr.extract_structured(str(tmp), "image") or []
             except Exception as e:  # noqa: BLE001
                 logger.warning("run_pipeline: structured OCR failed: {}", e)
@@ -307,7 +400,6 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
 
         payload = {
             "preprocessing": {"transformations_applied": [], "quality_metrics_before": {}},
-            "classification": {"class": doc_type.upper(), "confidence": 1.0, "fallback_triggered": False},
             "ocr": {
                 "raw_output": ocr_text,
                 "engine": ocr_engine,

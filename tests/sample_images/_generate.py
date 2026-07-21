@@ -1,7 +1,7 @@
 """
 tests/sample_images/_generate.py — generate PHI-free synthetic sample images.
 
-Produces 5 TABLE / 5 HANDWRITTEN / 5 PRINTED_TEXT images (PNG) plus a
+Produces 5 TABLE / 5 PRINTED_TEXT images (PNG) plus a
 ``ground_truth.json`` mapping each filename to its ``doc_class`` and expected
 OCR ``text``. The printed set uses clean, high-contrast lab-report text so the
 OCR engine can reproduce it with very low CER (used by the jiwer < 5% check).
@@ -98,25 +98,6 @@ def make_table(path, seed):
     return "\n".join(" | ".join(str(v) for v in row) for row in rendered_rows)
 
 
-def make_handwritten(path, seed):
-    rng = random.Random(seed * 13 + 1)
-    img = _new_white(700, 900)
-    d = ImageDraw.Draw(img)
-    # scattered freehand strokes (no long straight lines) — matches classifier
-    for _ in range(60):
-        x1 = rng.randint(40, 660)
-        y1 = rng.randint(40, 860)
-        ang = rng.uniform(0, 2 * 3.14159)
-        length = rng.randint(12, 45)
-        x2 = x1 + int(__import__("math").cos(ang) * length)
-        y2 = y1 + int(__import__("math").sin(ang) * length)
-        d.line([(x1, y1), (x2, y2)], fill=(0, 0, 0), width=2)
-    img.save(path)
-    # Handwritten is not CER-evaluated (no reliable ground transcription);
-    # we keep a human-readable placeholder note for inventory only.
-    return "handwritten clinical note (freehand strokes)"
-
-
 def main():
     gt: dict = {}
     for i in range(5):
@@ -125,9 +106,6 @@ def main():
     for i in range(5):
         p = os.path.join(HERE, f"table_{i+1}.png")
         gt[os.path.basename(p)] = {"doc_class": "TABLE", "text": make_table(p, i)}
-    for i in range(5):
-        p = os.path.join(HERE, f"handwritten_{i+1}.png")
-        gt[os.path.basename(p)] = {"doc_class": "HANDWRITTEN", "text": make_handwritten(p, i)}
 
     with open(os.path.join(HERE, "ground_truth.json"), "w", encoding="utf-8") as f:
         json.dump(gt, f, indent=2, ensure_ascii=False)

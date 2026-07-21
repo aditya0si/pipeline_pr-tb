@@ -103,15 +103,15 @@ pip install -r backend/requirements.txt
 > **Order matters:** The PaddlePaddle wheel must be installed *before*
 > `requirements.txt` so that its pinned `numpy<2.0` constraint is respected.
 
-### Qwen-VL GPU Acceleration (Optional)
+### Granite Vision GPU Acceleration (Optional)
 
-For **Qwen2.5-VL handwritten OCR** with 4-bit quantization on GPU:
+For **Granite Vision 4.1-4b tabular OCR** with 4-bit NF4 quantization on GPU:
 
 ```powershell
 pip install bitsandbytes>=0.46.1
 ```
 
-This enables `BitsAndBytesConfig(load_in_4bit=True)` in the Qwen-VL provider.
+This enables `BitsAndBytesConfig(load_in_4bit=True)` in the Granite Vision provider.
 
 ---
 
@@ -216,10 +216,6 @@ Copy-Item .env.example .env
 | `MEDVAULT_PRELOAD_GPU` | `1` | Set to `0` to disable GPU model preloading |
 | `PADDLE_LANG` | `en` | PaddleOCR inference language |
 | `PADDLE_USE_GPU` | `1` | Set to `0` to force PaddleOCR CPU mode |
-| `DETECTOR_BATCH_SIZE` | `1` | Surya detector batch size — **do not increase** on 8 GB VRAM |
-| `QWEN_SERVER_URL` | `http://127.0.0.1:8002/v1/chat/completions` | Qwen-VL llama.cpp server endpoint |
-| `QWEN_MODEL_PATH` | — | Path to Qwen2.5-VL GGUF model file |
-| `QWEN_USE_TRANSFORMERS` | `0` | Set to `1` to load Qwen via transformers (4-bit) |
 | `LLM_API_KEY` | — | API key for the LLM extraction formatter |
 | `GEMINI_API_KEY` | — | Google Gemini API key (legacy agent path) |
 
@@ -229,9 +225,8 @@ Copy-Item .env.example .env
 
 On startup, the backend preloads models onto the GPU (if available):
 
-- **Classifier CNN** — MobileNetV3 3-class weights
 - **PaddleOCR** — GPU-enabled PaddlePaddle (CUDA 12.9)
-- **Qwen2.5-VL** — 4-bit quantized vision-language model
+- **Granite Vision 4.1-4b** — 4-bit NF4 quantized vision-language model (tabular OCR)
 
 This happens in a background thread and takes ~10–30 seconds. You can monitor
 status at:
@@ -265,7 +260,7 @@ uv python install 3.12
 ```
 
 ### "Using bitsandbytes 4-bit quantization requires bitsandbytes"
-Install bitsandbytes for Qwen-VL 4-bit GPU inference:
+Install bitsandbytes for Granite Vision 4-bit NF4 GPU inference:
 
 ```powershell
 pip install bitsandbytes>=0.46.1
@@ -277,12 +272,11 @@ The Windows DLL search path is configured automatically in
 your system `PATH` and that the Paddle wheel was installed into the active
 `.venv`.
 
-### "Qwen-VL fails to load"
-- Ensure `bitsandbytes` is installed (for the transformers path).
-- If using the llama.cpp server path, set `QWEN_SERVER_URL` to your server
-  endpoint and start it via `backend/qwen_llama_server.py`.
-- If running Qwen in-process via transformers, ensure `torch` with CUDA is
-  installed and `QWEN_USE_TRANSFORMERS=1`.
+### "Granite Vision fails to load"
+- Ensure `bitsandbytes` is installed (for 4-bit NF4 quantization).
+- Ensure `torch` with CUDA is installed.
+- Granite Vision loads in-process (no microservice); it is lazy-loaded on
+  first tabular OCR request to avoid OOM alongside PaddleOCR.
 
 ### "Port 8000 already in use"
 Change the port:
@@ -311,7 +305,7 @@ Install `uv` from https://docs.astral.sh/uv/ and retry `setup_env.ps1`.
 pytest tests/ -v
 
 # Run specific test file
-pytest tests/test_classifier.py -v
+pytest tests/test_smoke.py -v
 
 # Run with coverage
 pytest tests/ --cov=backend --cov-report=html
@@ -334,19 +328,14 @@ pipeline_v1/
 │   ├── main.py                     # FastAPI app entry point
 │   ├── pipeline.py                 # Full DAG orchestration (run_pipeline)
 │   ├── config.py                   # Centralised pydantic-settings config
-│   ├── gpu_manager.py              # GPU preload manager (Paddle + Qwen only)
-│   ├── classifier/                 # Modular: MobileNetV3 + heuristics
-│   │   ├── classifier.py
-│   │   └── heuristics.py
+│   ├── gpu_manager.py              # GPU preload manager (Paddle + Granite)
 │   ├── ocr/                        # Modular OCR routing layer
 │   │   ├── router.py               # Unified run_ocr() dispatcher
-│   │   ├── ocr1_table.py           # PaddleOCR PP-Structure → Surya fallback
-│   │   ├── ocr2_handwritten.py     # Qwen2.5-VL → Surya fallback
+│   │   ├── ocr1_table.py           # PaddleOCR PP-Structure
 │   │   ├── ocr3_printed.py         # PaddleOCR (GPU)
 │   │   └── providers/
 │   │       ├── paddle_provider.py
-│   │       ├── qwen_vl_provider.py
-│   │       └── surya_provider.py   # DETECTOR_BATCH_SIZE=1 enforced
+│   │       └── granite_provider.py  # Granite Vision 4.1-4b (tabular, 4-bit NF4)
 │   ├── extraction/                 # Structured extraction + validation
 │   │   ├── schema.py               # Pydantic LabReport / LabResult models
 │   │   ├── formatter.py            # LLM-based formatting (placeholder)
@@ -393,16 +382,12 @@ pipeline_v1/
 | `pipeline.py` | Unified CLI — single image or batch processing |
 | `backend/pipeline.py` | Full DAG orchestration (`run_pipeline`, `run_pipeline_batch`) |
 | `backend/main.py` | FastAPI app, all routes, DB setup |
-| `backend/classifier/classifier.py` | 3-class classifier (MobileNetV3 + heuristics) |
 | `backend/ocr/router.py` | Unified `run_ocr()` dispatcher |
-| `backend/ocr/providers/` | Local OCR provider wrappers (Paddle, Qwen, Surya) |
+| `backend/ocr/providers/` | Local OCR provider wrappers (Paddle, Granite Vision) |
 | `backend/extraction/schema.py` | Pydantic models (LabReport, LabResult) |
 | `backend/extraction/formatter.py` | LLM-based structured extraction (placeholder) |
 | `backend/preprocessing/pipeline.py` | Deskew, crop, CLAHE, DPI normalisation |
-| `backend/gpu_manager.py` | GPU model preloading (Paddle + Qwen eager, Surya lazy) |
+| `backend/gpu_manager.py` | GPU model preloading (Paddle + Granite Vision) |
 | `backend/config.py` | Centralised pydantic-settings configuration |
 | `evaluation/metrics.py` | CER, WER, accuracy metrics (jiwer) |
 | `evaluation/benchmark.py` | Benchmark script → `eval_reports/metrics_latest.json` |
-| `scripts/train_classifier.py` | CNN training script |
-| `scripts/eval_classifier.py` | Evaluation script |
-| `scripts/tune_weights.py` | Heuristic weight optimization |

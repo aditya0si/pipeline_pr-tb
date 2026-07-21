@@ -38,27 +38,6 @@ def _make_printed_image(w=600, h=800, spacing=40):
     return img
 
 
-def _make_handwritten_image(w=600, h=800, seed=0):
-    rng = np.random.default_rng(seed)
-    img = np.ones((h, w, 3), dtype=np.uint8) * 255
-    n_lines = 12
-    for line_idx in range(n_lines):
-        y_base = 60 + line_idx * 55
-        x_start = 50 + int(rng.integers(0, 30))
-        x_end = w - 50 - int(rng.integers(0, 30))
-        pts = []
-        for x in range(x_start, x_end, 5):
-            y = int(y_base + 8 * np.sin(x * 0.05 + line_idx))
-            pts.append([x, y])
-        pts = np.array(pts, dtype=np.int32)
-        cv2.polylines(img, [pts], False, (0, 0, 0), 2, cv2.LINE_AA)
-        for x in range(x_start + 10, x_end - 10, 18):
-            y = int(y_base + 8 * np.sin(x * 0.05 + line_idx))
-            r = int(rng.integers(2, 12))
-            cv2.circle(img, (x, y - 3), r, (0, 0, 0), -1)
-    return img
-
-
 # ── Field contract ──────────────────────────────────────────────
 
 REQUIRED_FIELDS = {"doc_class", "raw_output", "ocr_engine_used", "processing_time_seconds"}
@@ -67,7 +46,7 @@ REQUIRED_FIELDS = {"doc_class", "raw_output", "ocr_engine_used", "processing_tim
 def _check_result_fields(result):
     assert isinstance(result, dict), "run_ocr must return a dict"
     assert REQUIRED_FIELDS.issubset(result.keys()), f"Missing fields: {REQUIRED_FIELDS - result.keys()}"
-    assert result["doc_class"] in ("TABLE", "HANDWRITTEN", "PRINTED_TEXT")
+    assert result["doc_class"] in ("TABLE", "PRINTED_TEXT")
     assert isinstance(result["processing_time_seconds"], float)
     assert result["processing_time_seconds"] >= 0.0
 
@@ -87,13 +66,6 @@ def test_run_ocr_printed_text():
     result = run_ocr(img, "PRINTED_TEXT")
     _check_result_fields(result)
     assert result["doc_class"] == "PRINTED_TEXT"
-
-
-def test_run_ocr_handwritten():
-    img = _make_handwritten_image()
-    result = run_ocr(img, "HANDWRITTEN")
-    _check_result_fields(result)
-    assert result["doc_class"] == "HANDWRITTEN"
 
 
 def test_run_ocr_unknown_class_raises():

@@ -304,10 +304,8 @@ def delete_provider(provider_id: str):
 def list_engines():
     return {
         "ocr": [
-            {"id": "pipeline", "name": "MedVault Dual Pipeline (PaddleOCR + Qwen2.5-VL)", "fields": [
-                {"key": "class_weights", "label": "Classifier Weights Path", "placeholder": "optional", "required": False},
+            {"id": "pipeline", "name": "MedVault Dual Pipeline (PaddleOCR + Granite Vision)", "fields": [
                 {"key": "paddle_endpoint", "label": "Printed OCR URL", "placeholder": "http://127.0.0.1:8001/ocr", "required": False},
-                {"key": "qwen_server_url", "label": "Qwen VL URL", "placeholder": "http://127.0.0.1:8002/v1/chat/completions", "required": False},
             ]},
         ],
         "ai": [

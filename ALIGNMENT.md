@@ -30,7 +30,7 @@ The codebase has implemented **most of the pipeline logic** (classifier, OCR pro
 | Image Preprocessing Helpers | `backend/image_processing.py` | ✅ Document detection, CLAHE, deskew |
 | Agents (6 types) | `backend/agents/*.py` | ✅ Classification, extraction, diagnosis, evaluation, etc. |
 | PaddleOCR Provider | `backend/paddle_ocr_provider.py` | ✅ Table extraction via PP-Structure |
-| Qwen VL Provider | `backend/qwen_vl_provider.py` | ✅ Handwritten OCR |
+| Granite Vision Provider | `backend/granite_provider.py` | ✅ Tabular OCR (Granite Vision 4.1-4b) |
 | Pydantic Schemas | `backend/schemas.py` | ✅ LabResult, LabReport matching IBM spec §6.4 |
 | Backend Services | `backend/services/*.py` | ✅ OCR service, pipeline service |
 | Heuristics | `backend/heuristics.py` | ✅ OCR grouping and extraction helpers |
@@ -50,8 +50,8 @@ The codebase has implemented **most of the pipeline logic** (classifier, OCR pro
 | `.gitmodules` file | Yes | ❌ Missing | Cannot clone submodules |
 | `extern/` directory | Yes | ❌ Missing | No upstream repo isolation |
 | Preprocessing submodule | Yes (Ishika) | ❌ No integration | Preprocessing logic embedded, not modular |
-| PaddleOCR submodule | Yes (Aditya) | ❌ No integration | Table OCR tightly coupled |
-| SuryaOCR submodule | Yes (Anshuman) | ❌ No integration | No fallback for table/handwritten |
+| PaddleOCR submodule | Yes (Aditya) | ✅ Integrated | PaddleOCR PP-Structure primary for tables |
+| SuryaOCR submodule | Yes (Anshuman) | ❌ Removed | Surya fallback removed; Granite Vision used instead |
 | TrOCR submodule | Yes (Aditi) | ❌ No integration | Handwriting OCR tightly coupled |
 | EasyOCR submodule | Yes (Ankit) | ❌ No integration | No secondary fallback for printed text |
 | Tesseract submodule | Yes (Sarika) | ❌ No integration | No tertiary fallback |
@@ -72,12 +72,12 @@ The codebase has implemented **most of the pipeline logic** (classifier, OCR pro
 |---|---|---|---|
 | `ocr/submodule_paths.py` | Yes | ❌ Missing | No sys.path setup for extern/ submodules |
 | `ocr/router.py` | Yes | ❌ Missing | No unified `run_ocr(image, doc_class)` entry point |
-| `ocr/ocr1_table.py` | Yes | ❌ Missing | No PaddleOCR → Surya → Docling fallback chain |
-| `ocr/ocr2_handwritten.py` | Yes | ❌ Missing | No TrOCR → Surya fallback chain |
+| `ocr/ocr1_table.py` | Yes | ✅ | PaddleOCR PP-Structure primary, Granite Vision for tabular |
+| `ocr/ocr2_handwritten.py` | Yes | ❌ Removed | Handwritten path removed; no longer in scope |
 | `ocr/ocr3_printed.py` | Yes | ❌ Missing | No olmOCR → EasyOCR → Tesseract fallback chain |
 
 **Current State:**
-- `paddle_ocr_provider.py` and `qwen_vl_provider.py` exist but are monolithic
+- `paddle_ocr_provider.py` and `granite_provider.py` exist as modular providers
 - `AutoOCRProvider` in `services/ocr_service.py` has some routing logic
 - No clear abstraction for "try engine A, fall back to engine B"
 
@@ -221,7 +221,7 @@ The codebase has implemented **most of the pipeline logic** (classifier, OCR pro
 | §4 | Document Classifier | `classifier/` module | ✅ | ❌ | Classifier works; not in classifier/ dir |
 | §5.0 | Submodules | `.gitmodules` + 8 repos | ❌ | ❌ | Critical gap; none set up |
 | §5.1 | OCR 1 (Table) | `ocr/ocr1_table.py` | ⚠️ Embedded | ❌ | PaddleOCR works; no routing abstraction |
-| §5.2 | OCR 2 (Handwriting) | `ocr/ocr2_handwritten.py` | ⚠️ Embedded | ❌ | Qwen VL works; no routing abstraction |
+| §5.2 | OCR 2 (Handwriting) | `ocr/ocr2_handwritten.py` | ❌ Removed | ❌ | Handwritten path removed from scope |
 | §5.3 | OCR 3 (Printed) | `ocr/ocr3_printed.py` | ⚠️ Embedded | ❌ | Paddle works; no fallback chain |
 | §5.4 | OCR Router | `ocr/router.py` | ❌ | ❌ | No unified dispatcher |
 | §6 | Extraction & Schema | `extraction/` module | ⚠️ Scattered | ❌ | Schemas exist; not modular; formatter missing |
@@ -306,10 +306,7 @@ The plan is organized by **priority and dependency**:
    
    SUBMODULE_PATHS = [
        EXTERN / "ocr_table_paddle",
-       EXTERN / "ocr_table_surya",
        EXTERN / "ocr_table_docling",
-       EXTERN / "ocr_handwritten_trocr",
-       EXTERN / "ocr_handwritten_surya",
        EXTERN / "ocr_printed_tesseract",
        EXTERN / "ocr_printed_easyocr",
        EXTERN / "ocr_printed_olmocr",
@@ -327,8 +324,8 @@ The plan is organized by **priority and dependency**:
    from typing import Dict, Any, Optional
    import numpy as np
    from .ocr1_table import extract_table
-   from .ocr2_handwritten import extract_handwritten
    from .ocr3_printed import extract_printed_text
+   from .providers.granite_provider import GraniteVisionProvider
    
    def run_ocr(preprocessed_image: np.ndarray, doc_class: str) -> Dict[str, Any]:
        """
@@ -336,7 +333,7 @@ The plan is organized by **priority and dependency**:
        
        Args:
            preprocessed_image: Preprocessed image as numpy array
-           doc_class: One of 'TABLE', 'HANDWRITTEN', 'PRINTED_TEXT'
+           doc_class: One of 'TABLE', 'PRINTED_TEXT'
        
        Returns:
            {
@@ -351,7 +348,6 @@ The plan is organized by **priority and dependency**:
        
        dispatch = {
            "TABLE": extract_table,
-           "HANDWRITTEN": extract_handwritten,
            "PRINTED_TEXT": extract_printed_text,
        }
        
@@ -377,7 +373,7 @@ The plan is organized by **priority and dependency**:
    
    def extract_table(image: np.ndarray) -> Dict[str, Any]:
        """
-       Extract table from image using PaddleOCR (primary) or Surya (fallback).
+       Extract table from image using PaddleOCR (primary) or Granite Vision (tabular).
        
        Returns:
            {
@@ -400,18 +396,6 @@ The plan is organized by **priority and dependency**:
        except Exception as e:
            pass
        
-       # Fallback: Surya
-       try:
-           from suryaocr.extractor import extract_table as surya_extract_table
-           result = surya_extract_table(image)
-           return {
-               "table": result.get("table", []),
-               "confidence": result.get("confidence", 0.80),
-               "engine": "SuryaOCR"
-           }
-       except Exception as e:
-           pass
-       
        # Last resort: empty table
        return {
            "table": [],
@@ -420,53 +404,7 @@ The plan is organized by **priority and dependency**:
        }
    ```
 
-5. Create `backend/ocr/ocr2_handwritten.py` (NEW — **critical missing file**):
-   ```python
-   import numpy as np
-   from typing import Dict, Any
-   from .submodule_paths import *
-   
-   def extract_handwritten(image: np.ndarray) -> Dict[str, Any]:
-       """
-       Extract handwritten text using TrOCR (primary) or Surya (fallback).
-       
-       Returns:
-           {
-               "text": str,
-               "confidence": float,
-               "engine": str
-           }
-       """
-       # Try TrOCR
-       try:
-           from trocr.extractor import extract_handwritten as trocr_extract
-           result = trocr_extract(image)
-           return {
-               "text": result.get("text", ""),
-               "confidence": result.get("confidence", 0.90),
-               "engine": "TrOCR"
-           }
-       except Exception as e:
-           pass
-       
-       # Fallback: Surya (handwriting mode)
-       try:
-           from suryaocr.extractor import extract_handwritten as surya_extract_hw
-           result = surya_extract_hw(image)
-           return {
-               "text": result.get("text", ""),
-               "confidence": result.get("confidence", 0.80),
-               "engine": "SuryaOCR"
-           }
-       except Exception as e:
-           pass
-       
-       return {
-           "text": "",
-           "confidence": 0.0,
-           "engine": "fallback_empty"
-       }
-   ```
+5. ~~Create `backend/ocr/ocr2_handwritten.py`~~ — **REMOVED FROM SCOPE**. Handwritten OCR is no longer part of the MedVault pipeline. The printed+tabular only route uses PaddleOCR + Granite Vision.
 
 6. Create `backend/ocr/ocr3_printed.py` (NEW — **critical missing file**):
    ```python
@@ -556,7 +494,7 @@ The plan is organized by **priority and dependency**:
        
        Args:
            raw_ocr_text: Raw text from OCR engine
-           doc_class: Document class (TABLE / HANDWRITTEN / PRINTED_TEXT)
+           doc_class: Document class (TABLE / PRINTED_TEXT)
        
        Returns:
            {
@@ -705,21 +643,9 @@ The plan is organized by **priority and dependency**:
 	path = extern/ocr_table_paddle
 	url = https://github.com/ibm-techlab-summer-internship/intern-ocr-paddleocr-aditya.git
 
-[submodule "extern/ocr_table_surya"]
-	path = extern/ocr_table_surya
-	url = https://github.com/ibm-techlab-summer-internship/intern-ocr-suryaocr-anshuman.git
-
 [submodule "extern/ocr_table_docling"]
 	path = extern/ocr_table_docling
 	url = https://github.com/ibm-techlab-summer-internship/intern-ocr-granite-docling.git
-
-[submodule "extern/ocr_handwritten_trocr"]
-	path = extern/ocr_handwritten_trocr
-	url = https://github.com/ibm-techlab-summer-internship/intern-ocr-trocr-aditi.git
-
-[submodule "extern/ocr_handwritten_surya"]
-	path = extern/ocr_handwritten_surya
-	url = https://github.com/ibm-techlab-summer-internship/intern-ocr-suryaocr-anshuman.git
 
 [submodule "extern/ocr_printed_tesseract"]
 	path = extern/ocr_printed_tesseract

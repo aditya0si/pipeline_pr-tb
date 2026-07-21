@@ -1,7 +1,7 @@
 """
 ocr_result.py — Shared OCR output contract for the MedVault agentic pipeline.
 
-Every OCR agent (Table / Handwritten / Printed) and the OCRRouterAgent return a
+Every OCR agent (Table / Printed) and the OCRRouterAgent return a
 single, uniform :class:`OCRResult` so downstream stages (ExtractionAgent, etc.)
 can consume OCR output without knowing which engine produced it.
 
@@ -17,10 +17,10 @@ class OCRResult:
     """
     Uniform OCR output.
 
-    :param raw_output: OCR text (``str``) for HANDWRITTEN/PRINTED_TEXT routes, or
+    :param raw_output: OCR text (``str``) for PRINTED_TEXT routes, or
         a 2D ``list[list[str]]`` table for the TABLE (PP-Structure) route.
     :param engine: human-readable engine name, e.g. ``"PaddleOCR-PP-Structure"``,
-        ``"Qwen2.5-VL"``, ``"PaddleOCR-Basic"``, ``"Tesseract-5"`` or ``"none"``.
+        ``"Granite-Vision-4.1-4b"``, ``"PaddleOCR-Basic"``, ``"Tesseract-5"`` or ``"none"``.
     :param confidence: engine/route confidence in [0.0, 1.0].
     :param processing_time_seconds: wall-clock seconds spent in the route.
     """

@@ -6,7 +6,7 @@
 No new code is being written. We will commit the full, correct version of `backend/main.py` and `backend/routes/reports_routes.py` (which contain the route registration and default patient logic), push them to the remote repository, and restart the backend server so the API endpoints are fully functional.
 
 ### 2. What does "done" look like?
-- `backend/main.py` and `backend/routes/reports_routes.py` changes are committed and pushed to `https://github.com/Shreyash-deve7/medical-ocr-pipeline`.
+- `backend/main.py` and `backend/routes/reports_routes.py` changes are committed and pushed to `https://github.com/aditya0si/pipeline_pr-tb`.
 - Backend server is running successfully on port 8000.
 - Querying `/health` and `/api/gpu/status` returns successfully instead of 404.
 

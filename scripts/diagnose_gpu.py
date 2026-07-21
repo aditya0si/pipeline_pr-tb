@@ -3,7 +3,7 @@ diagnose_gpu.py - GPU environment diagnostic for pipeline_v1
 ============================================================
 Verifies BOTH OCR backends run on the system GPU using pure native stacks:
   - PaddleOCR  (printed reports)  via paddlepaddle-gpu CUDA
-  - Qwen2.5-VL (handwritten)      via torch CUDA  (separate :8002 microservice)
+  - Granite Vision 4.1-4b (tabular) via torch CUDA  (in-process, 4-bit NF4)
 
 NO RapidOCR / DirectML is used (native PaddlePaddle + native torch only).
 
@@ -44,12 +44,12 @@ except Exception as e:
 
 print()
 
-# ---- torch (Qwen2.5-VL handwritten OCR, native CUDA) ----
+# ---- torch (Granite Vision tabular OCR, native CUDA) ----
 # Checked in a SEPARATE subprocess on purpose: PaddlePaddle prepends its own
 # CUDA/CUDNN DLLs to PATH on import, which breaks torch's CUDNN load if both
-# live in one process. In production Qwen-VL runs in its own :8002 process,
-# so this mirrors reality and reports an honest result.
-print("[2/3] Checking torch (Qwen2.5-VL handwritten OCR, native CUDA)...")
+# live in one process. In production Granite Vision runs in-process via
+# transformers + bitsandbytes, so this mirrors reality and reports an honest result.
+print("[2/3] Checking torch (Granite Vision tabular OCR, native CUDA)...")
 torch_ok = False
 try:
     import subprocess
@@ -94,15 +94,15 @@ print("=" * 60)
 print("SUMMARY")
 print("=" * 60)
 print(f"  PaddlePaddle CUDA (printed):   {'PASS' if paddle_ok else 'FAIL'}")
-print(f"  torch CUDA (handwritten):      {'PASS' if torch_ok else 'FAIL'}")
+print(f"  torch CUDA (tabular):        {'PASS' if torch_ok else 'FAIL'}")
 print()
 if paddle_ok and torch_ok:
     print("SUCCESS: Both OCR backends run on the system GPU (native stacks).")
     print("  PaddleOCR (printed) -> PaddlePaddle CUDA (in-process)")
-    print("  Qwen2.5-VL (handwritten) -> torch CUDA (separate :8002 process)")
+    print("  Granite Vision (tabular) -> torch CUDA (in-process, 4-bit NF4)")
     print()
-    print("  IMPORTANT: Never run both GPU models in the SAME process")
-    print("  (Hard Rule #2). Qwen runs in its own microservice process.")
+    print("  NOTE: PaddleOCR and Granite Vision share the same GPU but")
+    print("  are lazy-loaded to avoid VRAM contention (Hard Rule #2).")
 else:
     print("PARTIAL/FAILED: Fix versions in pipeline_v1/backend/requirements.txt.")
 print("=" * 60)

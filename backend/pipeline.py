@@ -13,7 +13,6 @@ import cv2
 
 
 class DocumentClass(Enum):
-    HANDWRITTEN = "HANDWRITTEN"
     PRINTED_TEXT = "PRINTED_TEXT"
     TABLE = "TABLE"
 
@@ -21,27 +20,27 @@ class DocumentClass(Enum):
 class AutoOCRProvider:
     """
     OCR Router that selects the appropriate engine based on document class.
-    - HANDWRITTEN -> Qwen2.5-VL (4-bit quantized VLM)
-    - PRINTED_TEXT / TABLE -> PaddleOCR (GPU-accelerated)
+    - TABLE -> Granite Vision 4.1-4b (4-bit NF4 quantized VLM)
+    - PRINTED_TEXT -> PaddleOCR (GPU-accelerated)
     """
-    
+
     def __init__(self):
-        self._qwen_engine = None
+        self._granite_engine = None
         self._paddle_engine = None
-    
-    def _get_qwen_engine(self):
-        """Lazy-load Qwen2.5-VL engine with 4-bit quantization."""
-        if self._qwen_engine is None:
+
+    def _get_granite_engine(self):
+        """Lazy-load Granite Vision 4.1-4b engine with 4-bit NF4 quantization."""
+        if self._granite_engine is None:
             try:
-                from engines.qwen_engine import QwenVLEngine
-                self._qwen_engine = QwenVLEngine()
+                from backend.ocr.providers.granite_provider import GraniteVisionProvider
+                self._granite_engine = GraniteVisionProvider()
             except ImportError:
                 raise RuntimeError(
-                    "Qwen2.5-VL engine not available. "
-                    "Ensure transformers, torch, and bitsandbytes are installed."
+                    "Granite Vision engine not available. "
+                    "Ensure transformers, accelerate, and bitsandbytes are installed."
                 )
-        return self._qwen_engine
-    
+        return self._granite_engine
+
     def _get_paddle_engine(self):
         """Lazy-load PaddleOCR engine."""
         if self._paddle_engine is None:
@@ -54,27 +53,24 @@ class AutoOCRProvider:
                     "Ensure paddlepaddle-gpu is installed with CUDA 12.9 support."
                 )
         return self._paddle_engine
-    
+
     def extract_text(self, image_path: str, doc_class: DocumentClass) -> Tuple[str, float]:
         """
         Route to appropriate OCR engine based on document class.
-        
+
         Returns:
             Tuple of (extracted_text, duration_seconds)
         """
         start_time = time.time()
-        
-        if doc_class == DocumentClass.HANDWRITTEN:
-            engine = self._get_qwen_engine()
-            text = engine.extract_text(image_path)
+
+        if doc_class == DocumentClass.TABLE:
+            engine = self._get_granite_engine()
+            text = engine.extract_text(image_path, "image")
         else:
-            # PRINTED_TEXT or TABLE -> PaddleOCR
+            # PRINTED_TEXT -> PaddleOCR
             engine = self._get_paddle_engine()
-            if doc_class == DocumentClass.TABLE:
-                text = engine.extract_table(image_path)
-            else:
-                text = engine.extract_text(image_path)
-        
+            text = engine.extract_text(image_path)
+
         duration = time.time() - start_time
         return text, duration
 
