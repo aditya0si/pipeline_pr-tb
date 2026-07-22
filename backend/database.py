@@ -29,6 +29,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "medvault.db"))
+
 # SQLAlchemy shim so ``models.py`` (``from database import Base``) keeps importing.
 # The routes use raw SQL and never touch this; it exists only for ORM-compat.
 try:  # pragma: no cover - sqlalchemy is present in the venv
@@ -36,14 +38,12 @@ try:  # pragma: no cover - sqlalchemy is present in the venv
     from sqlalchemy.orm import sessionmaker, declarative_base
 
     Base = declarative_base()
-    _engine = create_engine(f"sqlite:///{os.environ.get('DB_PATH', 'medvault.db')}")
+    _engine = create_engine(f"sqlite:///{DB_PATH}")
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 except Exception:  # pragma: no cover
     Base = None
     SessionLocal = None
 
-
-DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "medvault.db"))
 
 _lock = threading.Lock()
 
@@ -89,6 +89,7 @@ def init_db() -> None:
         try:
             conn.executescript(_SCHEMA_SQL)
             _migrate_patients_schema(conn)
+            _migrate_reports_schema(conn)
             conn.commit()
         finally:
             conn.close()
@@ -137,7 +138,10 @@ CREATE TABLE IF NOT EXISTS reports (
     analyzed INTEGER DEFAULT 0,
     classification TEXT,
     structured_results TEXT,
-    analysis TEXT
+    analysis TEXT,
+    llm_analysis TEXT,
+    llm_engine TEXT,
+    llm_duration REAL
 );
 
 CREATE TABLE IF NOT EXISTS allergies (
@@ -358,6 +362,9 @@ def _migrate_reports_schema(conn: sqlite3.Connection) -> None:
     that only hold a connection (e.g. ``reports_routes.py``) can guarantee the
     columns exist independently of whether ``init_db()`` ran first.
     """
+    tbl_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='reports'").fetchone()
+    if not tbl_check:
+        return
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(reports)")}
     for col, ddl in _REPORT_COLUMNS.items():
         if col not in existing:
@@ -376,6 +383,9 @@ _REPORT_COLUMNS = {
     "classification": "TEXT",
     "structured_results": "TEXT",
     "analysis": "TEXT",
+    "llm_analysis": "TEXT",
+    "llm_engine": "TEXT",
+    "llm_duration": "REAL",
 }
 
 
@@ -388,7 +398,6 @@ def _notify(conn: sqlite3.Connection, user_type: str, user_id: str,
         (str(uuid.uuid4()), user_type, user_id, title, body, kind,
          datetime.now(timezone.utc).isoformat()),
     )
-    conn.commit()
 
 
 def _audit(conn: sqlite3.Connection, user_type: str, user_id: str, action: str,
@@ -400,7 +409,6 @@ def _audit(conn: sqlite3.Connection, user_type: str, user_id: str, action: str,
         (str(uuid.uuid4()), user_type, user_id, action, ref_type, ref_id, details,
          datetime.now(timezone.utc).isoformat()),
     )
-    conn.commit()
 
 
 def _get_provider_row(conn: sqlite3.Connection, provider_id: Optional[str],

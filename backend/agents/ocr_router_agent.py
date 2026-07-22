@@ -34,12 +34,19 @@ def _make_printed_agent():
     return PrintedOCRAgent()
 
 
+def _make_handwritten_agent():
+    from agents.handwritten_ocr_agent import HandwrittenOCRAgent
+    return HandwrittenOCRAgent()
+
+
 # Routing table: doc_class -> agent factory.
 AGENT_FACTORIES: Dict[str, Callable[[], object]] = {
     "TABLE": _make_table_agent,
     "PRINTED_TEXT": _make_printed_agent,
-    # Legacy 2-class alias (backward-compat with stored doc_type).
+    "HANDWRITTEN": _make_handwritten_agent,
+    # Aliases
     "printed": _make_printed_agent,
+    "handwritten": _make_handwritten_agent,
 }
 
 

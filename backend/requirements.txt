@@ -41,9 +41,10 @@ lxml>=5.0.0
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch
 torchvision
-transformers==5.6.2  # pinned: IBM Granite Vision 4.1-4b remote code requires this exact version
+transformers>=5.0.0,<=5.6.2  # IBM Granite Vision 4.1-4b vision-language modeling
 accelerate
 bitsandbytes>=0.46.1
+pytesseract>=0.3.10
 
 # PDF parsing (used by ai_service.py for doctor analysis feature)
 PyMuPDF>=1.23.0

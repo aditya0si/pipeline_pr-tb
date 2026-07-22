@@ -71,11 +71,17 @@ export const doctorLogin = (phone: string, password: string) =>
 export const listPatients = () => request<any[]>("/doctor/patients");
 export const getPatientDetail = (id: string) => request<any>(`/doctor/patient/${id}`);
 export const patientReportList = (id: string) => request<any[]>(`/doctor/patient/${id}/reports`);
-export const fileUrl = (id: string) => `${BASE}/file/${id}`;
+export const fileUrl = (id: string) =>
+  typeof window !== "undefined" ? `${window.location.origin}/api/file/${id}` : `${BASE}/file/${id}`;
 
 // ── Analysis ────────────────────────────────────────────────
-export const analyzeReport = (reportId: string, opts: { apiKey?: string; aiProviderId?: string } = {}) =>
-  jsonPost("/doctor/analyze", { report_id: reportId, api_key: opts.apiKey || "", ai_provider_id: opts.aiProviderId || "" }) as Promise<{ analysis: string; ocr_text: string; doc_type: string; structured_results: any[]; ocr_engine: string; report_id: string; status: string }>;
+export const analyzeReport = (reportId: string, opts: { apiKey?: string; aiProviderId?: string; ocrProviderId?: string } = {}) =>
+  jsonPost("/doctor/analyze", {
+    report_id: reportId,
+    ocr_provider_id: opts.ocrProviderId || "",
+    ai_provider_id: opts.aiProviderId || "",
+    api_key: opts.apiKey || "",
+  }) as Promise<{ analysis: string; ocr_text: string; doc_type: string; structured_results: any[]; ocr_engine: string; report_id: string; status: string }>;
 
 // ── Pipeline (Session 8 endpoint) ───────────────────────────
 export const runPipeline = async (
@@ -96,7 +102,7 @@ export const runPipeline = async (
     jobRes = await request<{ job_id: string; status: string }>("/pipeline/run", { method: "POST", body: fd });
   } catch (e: any) {
     if (e.message === "Failed to fetch" || e.message === "Load failed") {
-      throw new Error("Connection lost during pipeline request. Please verify backend server is running on port 3002.");
+      throw new Error("Connection lost during pipeline request. Please verify backend server is running.");
     }
     throw e;
   }
@@ -121,7 +127,7 @@ export const runPipeline = async (
         throw new Error(statusRes.error || "Pipeline execution failed.");
       }
     } catch (e: any) {
-      if (e.message?.includes("failed") || e.message?.includes("Failed")) {
+      if (e.message?.startsWith("Pipeline") || (e.status && e.status >= 400 && e.status < 500)) {
         throw e;
       }
       // Transient polling network errors — continue loop until maxAttempts
@@ -150,9 +156,11 @@ export interface PipelineResult {
     evaluate: boolean;
     summary: boolean;
     duration_ms: number;
+    duration_seconds?: number;
+    llm_duration_seconds?: number;
     started_at: string;
     completed_at: string;
-    errors?: Record<string, string>;
+    errors: Record<string, string>;
   };
 }
 

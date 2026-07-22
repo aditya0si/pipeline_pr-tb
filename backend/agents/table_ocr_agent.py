@@ -77,21 +77,34 @@ class TableOCRAgent:
     @property
     def granite_provider(self):
         if self._granite_provider is None:
-            from backend.ocr.providers.granite_provider import GraniteVisionProvider
+            try:
+                from ocr.providers.granite_provider import GraniteVisionProvider
+            except ImportError:
+                from backend.ocr.providers.granite_provider import GraniteVisionProvider
             self._granite_provider = GraniteVisionProvider()
         return self._granite_provider
 
     @property
     def paddle_provider(self):
         if self._paddle_provider is None:
-            from backend.ocr.providers.paddle_provider import PaddleOCRProvider
+            try:
+                from ocr.providers.paddle_provider import PaddleOCRProvider
+            except ImportError:
+                from backend.ocr.providers.paddle_provider import PaddleOCRProvider
             self._paddle_provider = PaddleOCRProvider()
         return self._paddle_provider
 
-    def run(self, image: np.ndarray) -> OCRResult:
-        """Extract text from a tabular report ``image`` (BGR ndarray) -> OCRResult."""
+    def run(self, image) -> OCRResult:
+        """Extract text from a tabular report ``image`` (BGR ndarray or filepath string/Path) -> OCRResult."""
+        from pathlib import Path
         start = time.time()
-        tmp = _save_tmp(image)
+        created_tmp = False
+        if isinstance(image, (str, Path)):
+            tmp = str(image)
+        else:
+            tmp = _save_tmp(image)
+            created_tmp = True
+
         try:
             # ── Primary: Granite Vision ────────────────────────────────────────
             try:
@@ -111,7 +124,10 @@ class TableOCRAgent:
                 logger.warning("Granite Vision path failed, falling back: {}", e)
 
             # ── Fallback: basic PaddleOCR + heuristic row grouping ─────────────
-            from backend.ocr.providers.paddle_provider import run_paddle_ocr_on_document
+            try:
+                from ocr.providers.paddle_provider import run_paddle_ocr_on_document
+            except ImportError:
+                from backend.ocr.providers.paddle_provider import run_paddle_ocr_on_document
             lines = run_paddle_ocr_on_document(
                 tmp, use_gpu=self.paddle_provider.use_gpu,
                 lang=self.paddle_provider.lang,
@@ -129,7 +145,8 @@ class TableOCRAgent:
                 processing_time_seconds=time.time() - start,
             )
         finally:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+            if created_tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass

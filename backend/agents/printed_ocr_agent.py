@@ -48,20 +48,31 @@ class PrintedOCRAgent:
     @property
     def paddle_provider(self):
         if self._paddle_provider is None:
-            from backend.ocr.providers.paddle_provider import PaddleOCRProvider
+            try:
+                from ocr.providers.paddle_provider import PaddleOCRProvider
+            except ImportError:
+                from backend.ocr.providers.paddle_provider import PaddleOCRProvider
             self._paddle_provider = PaddleOCRProvider()
         return self._paddle_provider
 
-    def run(self, image: np.ndarray) -> OCRResult:
-        """OCR a printed ``image`` (BGR ndarray) -> first non-empty engine result."""
+    def run(self, image) -> OCRResult:
+        """OCR a printed ``image`` (BGR ndarray or filepath string/Path) -> first non-empty engine result."""
+        from pathlib import Path
         start = time.time()
-        fd, tmp = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        try:
+        created_tmp = False
+        if isinstance(image, (str, Path)):
+            tmp = str(image)
+            img_bgr = cv2.imread(tmp)
+        else:
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
             ok = cv2.imwrite(tmp, image)
             if not ok:
                 raise IOError("Failed to write temporary image for printed OCR")
+            img_bgr = image
+            created_tmp = True
 
+        try:
             # ── 1. PaddleOCR (basic) ───────────────────────────────────────────
             try:
                 text = self.paddle_provider.extract_text(tmp, "image")
@@ -76,10 +87,10 @@ class PrintedOCRAgent:
                 logger.warning("PaddleOCR printed path failed: {}", e)
 
             # ── 2. Tesseract (optional) ───────────────────────────────────────
-            if _tesseract_available():
+            if _tesseract_available() and img_bgr is not None:
                 try:
                     import pytesseract
-                    t_text = pytesseract.image_to_string(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                    t_text = pytesseract.image_to_string(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
                     if t_text and t_text.strip():
                         return OCRResult(
                             raw_output=t_text,
@@ -98,7 +109,8 @@ class PrintedOCRAgent:
                 processing_time_seconds=time.time() - start,
             )
         finally:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+            if created_tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass

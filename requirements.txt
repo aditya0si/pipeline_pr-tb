@@ -22,3 +22,5 @@ bitsandbytes>=0.43.0
 accelerate>=0.27.0
 pytest>=8.2.0
 python-dotenv>=1.0.0
+chandra-ocr[hf]>=0.2.0
+hf_transfer>=0.1.8

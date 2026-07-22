@@ -1,4 +1,4 @@
-﻿"""
+"""
 schemas.py ΓÇö Pydantic v2 models for the MedVault Hepatology lab-report JSON.
 
 These mirror the IBM spec (pipeline_ibm.md Section 6.4) schema used by the
@@ -20,7 +20,7 @@ extraction-only ``lab_results`` JSON (produced by the LLM prompt in
 reference.md Section E Agent 4) validates on its own while still honouring
 the full IBM ┬º6.4 contract when present.
 """
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -30,7 +30,7 @@ class ReferenceRange(BaseModel):
 
     low: Optional[float] = None
     high: Optional[float] = None
-    unit: str
+    unit: str = ""
 
 
 class LabResult(BaseModel):
@@ -38,9 +38,9 @@ class LabResult(BaseModel):
 
     test_name: str
     test_abbreviation: Optional[str] = None
-    value: Optional[float] = None
-    unit: str
-    reference_range: ReferenceRange
+    value: Optional[Union[float, str]] = None
+    unit: str = ""
+    reference_range: Optional[ReferenceRange] = None
     flag: Literal[
         "HIGH",
         "LOW",
@@ -48,7 +48,7 @@ class LabResult(BaseModel):
         "CRITICAL_LOW",
         "NORMAL",
         "UNKNOWN",
-    ]
+    ] = "UNKNOWN"
     clinical_significance: Optional[str] = None
 
 
@@ -142,7 +142,7 @@ class ProviderReq(BaseModel):
     kind: str
     name: str
     engine: str
-    config: dict = {}
+    config: dict = Field(default_factory=dict)
     is_default: bool = False
 
 class PatientProfileReq(BaseModel):
@@ -193,7 +193,7 @@ class PrescriptionReq(BaseModel):
     doctor_name: str = ""
     diagnosis: str = ""
     notes: str = ""
-    items: list[dict] = []
+    items: List[dict] = Field(default_factory=list)
 
 class ClinicalNoteReq(BaseModel):
     patient_id: str
@@ -216,7 +216,7 @@ class AppointmentReq(BaseModel):
 class LabResultReq(BaseModel):
     patient_id: str
     test_name: str
-    value: float
+    value: Optional[Union[float, str]] = None
     unit: str = ""
     reference_low: Optional[float] = None
     reference_high: Optional[float] = None
@@ -256,11 +256,11 @@ class ReferralReq(BaseModel):
 class TemplateReq(BaseModel):
     template_type: str
     name: str
-    content: dict = {}
+    content: dict = Field(default_factory=dict)
 
 class InvoiceReq(BaseModel):
     patient_id: str
-    items: list = []
+    items: list = Field(default_factory=list)
     subtotal: float = 0
     tax: float = 0
     total: float = 0

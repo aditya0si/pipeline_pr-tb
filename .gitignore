@@ -89,3 +89,4 @@ frontend/ui-audit-screenshots/
 
 # Temporary test outputs
 result.json
+*.gguf

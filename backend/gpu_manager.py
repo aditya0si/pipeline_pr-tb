@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import os
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Optional
+from loguru import logger
 
 # ── Singleton state ──────────────────────────────────────────────────────────
 _lock = threading.Lock()
@@ -29,6 +31,11 @@ _paddle_error: Optional[str] = None
 _paddle_using_gpu = False
 _granite_loaded = False
 _granite_error: Optional[str] = None
+
+_chandra_loaded = False
+_chandra_error: Optional[str] = None
+_ollama_reachable = False
+_ollama_model_name = ""
 
 # CUDA info
 _cuda_available = False
@@ -50,6 +57,10 @@ class GPUStatus:
     paddle_error: Optional[str]
     granite_loaded: bool
     granite_error: Optional[str]
+    chandra_loaded: bool
+    chandra_error: Optional[str]
+    ollama_reachable: bool
+    ollama_model: str
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -75,7 +86,6 @@ def _preload_paddle() -> None:
         import backend.ocr.providers.paddle_provider as pop
         pop._verify_gpu()
         pop._get_ocr(use_gpu=True)
-        # Re-check after init
         _paddle_using_gpu = bool(pop._GPU_ACTIVE)
         _paddle_loaded = True
         print(f"[GPU preload] PaddleOCR loaded (GPU={_paddle_using_gpu})")
@@ -85,13 +95,7 @@ def _preload_paddle() -> None:
 
 
 def _preload_granite() -> None:
-    """Eagerly load the Granite Vision 4.1-4b model onto the GPU (4-bit NF4).
-
-    This is loaded at startup so the first tabular OCR request is fast and the
-    GPU is warm. If it fails (e.g. model not downloaded yet) we record the
-    error but don't block startup — the lazy path in ``granite_provider``
-    will retry on demand.
-    """
+    """Eagerly load the Granite Vision 4.1-4b model onto the GPU (4-bit NF4)."""
     global _granite_loaded, _granite_error
     try:
         from backend.ocr.providers.granite_provider import _get_model
@@ -109,31 +113,89 @@ def wait_for_granite_ready(max_wait_seconds: int = 60) -> bool:
     """Wait up to max_wait_seconds for Granite Vision background preloading to complete."""
     import time
     global _granite_loaded, _preload_started, _preload_done
-    if _granite_loaded:
-        return True
+    with _lock:
+        if _granite_loaded:
+            return True
     
     start = time.time()
     while time.time() - start < max_wait_seconds:
-        if _granite_loaded:
-            return True
-        if _preload_done and not _granite_loaded:
-            # Preload finished but granite failed
-            break
+        with _lock:
+            if _granite_loaded:
+                return True
+            if _preload_done and not _granite_loaded:
+                break
         time.sleep(0.5)
-    return _granite_loaded
+    with _lock:
+        return _granite_loaded
+
+
+def evict_chandra() -> None:
+    """Unload Chandra from VRAM and clear the singleton cache."""
+    global _chandra_loaded
+    try:
+        try:
+            from ocr.providers.chandra_provider import unload_chandra_model
+        except ImportError:
+            from backend.ocr.providers.chandra_provider import unload_chandra_model
+        unload_chandra_model()
+        try:
+            import services.ocr_service as svc
+        except ImportError:
+            import backend.services.ocr_service as svc
+        svc._chandra_wrapper_cache = None
+        _chandra_loaded = False
+        logger.info("[gpu_manager] Chandra evicted from VRAM")
+    except Exception as e:
+        logger.warning(f"[gpu_manager] evict_chandra failed: {e}")
+
+
+def evict_ollama(base_url: str = "http://localhost:11434", model: str = "biomistral") -> None:
+    """Tell Ollama to unload the model immediately (keep_alive=0)."""
+    try:
+        import httpx
+        httpx.post(f"{base_url}/api/generate", json={"model": model, "prompt": "", "keep_alive": 0}, timeout=10)
+        logger.info(f"[gpu_manager] Ollama model '{model}' evicted.")
+    except Exception as e:
+        logger.warning(f"[gpu_manager] evict_ollama failed: {e}")
+
+
+def ping_ollama(base_url: str = "http://localhost:11434") -> bool:
+    """Return True if Ollama daemon is reachable."""
+    global _ollama_reachable
+    try:
+        import httpx
+        r = httpx.get(f"{base_url}/api/tags", timeout=3)
+        _ollama_reachable = (r.status_code == 200)
+        return _ollama_reachable
+    except Exception:
+        _ollama_reachable = False
+        return False
+
+
+@contextmanager
+def chandra_vram_context():
+    """Context manager ensuring Chandra is evicted from VRAM after use."""
+    try:
+        yield
+    finally:
+        evict_chandra()
+
+
+@contextmanager
+def ollama_vram_context(base_url: str = "http://localhost:11434", model: str = "biomistral"):
+    """Context manager ensuring BioMistral is evicted from VRAM after use."""
+    try:
+        yield
+    finally:
+        evict_ollama(base_url, model)
 
 
 def preload_models(blocking: bool = True) -> None:
-    """Preload all heavy models onto the GPU.
-
-    :param blocking: if True (default, used at startup) load synchronously.
-        if False, run in a background thread (used by the API "preload" button
-        so the HTTP response returns immediately).
-    """
+    """Preload all heavy models onto the GPU."""
     global _preload_started, _preload_done, _preload_error
     with _lock:
-        if _preload_started and not _preload_done:
-            return  # already in progress
+        if _preload_started:
+            return
         _preload_started = True
         _preload_done = False
         _preload_error = None
@@ -142,9 +204,9 @@ def preload_models(blocking: bool = True) -> None:
         global _preload_done, _preload_error
         try:
             _detect_cuda()
-            # Load heavy Granite VLM first on clean VRAM before Paddle
             _preload_granite()
             _preload_paddle()
+            ping_ollama()
         except Exception as e:
             _preload_error = str(e)
         finally:
@@ -161,6 +223,26 @@ def preload_models(blocking: bool = True) -> None:
 def gpu_status() -> GPUStatus:
     """Return a snapshot of the current GPU / model-load state."""
     _detect_cuda()
+    try:
+        try:
+            from ocr.providers.chandra_provider import _MODEL as c_model
+        except ImportError:
+            from backend.ocr.providers.chandra_provider import _MODEL as c_model
+        chandra_active = (c_model is not None)
+    except Exception:
+        chandra_active = False
+
+    try:
+        try:
+            from config import settings
+        except ImportError:
+            from backend.config import settings
+        ollama_model = settings.ollama_model
+        ping_ollama(settings.ollama_base_url)
+    except Exception:
+        ollama_model = "biomistral"
+        ping_ollama()
+
     return GPUStatus(
         cuda_available=_cuda_available,
         cuda_device_name=_cuda_device_name,
@@ -173,4 +255,9 @@ def gpu_status() -> GPUStatus:
         paddle_error=_paddle_error,
         granite_loaded=_granite_loaded,
         granite_error=_granite_error,
+        chandra_loaded=chandra_active,
+        chandra_error=_chandra_error,
+        ollama_reachable=_ollama_reachable,
+        ollama_model=ollama_model,
     )
+

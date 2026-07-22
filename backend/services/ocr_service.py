@@ -51,7 +51,10 @@ class GraniteVisionProviderWrapper(OCRProvider):
     """MedVault wrapper around IBM Granite Vision 4.1-4b for tabular report OCR (GPU)."""
     def __init__(self, model_id: str = "ibm-granite/granite-vision-4.1-4b",
                  device: str = "", torch_dtype: str = "float16", load_in_4bit: bool = True):
-        from backend.ocr.providers.granite_provider import GraniteVisionProvider
+        try:
+            from ocr.providers.granite_provider import GraniteVisionProvider
+        except ImportError:
+            from backend.ocr.providers.granite_provider import GraniteVisionProvider
         self._provider = GraniteVisionProvider(
             model_id=model_id,
             device=device or None,
@@ -65,11 +68,29 @@ class GraniteVisionProviderWrapper(OCRProvider):
         return self._provider.extract_structured(filepath, filetype)
 
 
+class ChandraOCRProviderWrapper(OCRProvider):
+    """MedVault wrapper around Chandra OCR (INT4 NF4) for handwritten report OCR."""
+    def __init__(self, model_id: str = "datalab-to/chandra-ocr-2", max_megapixels: float = 1.0):
+        try:
+            from ocr.providers.chandra_provider import ChandraOCRProvider
+        except ImportError:
+            from backend.ocr.providers.chandra_provider import ChandraOCRProvider
+        self._provider = ChandraOCRProvider(model_id=model_id, max_megapixels=max_megapixels)
+
+    def extract_text(self, filepath: str, filetype: str) -> str:  # pragma: no cover - GPU/OCR runtime
+        return self._provider.extract_text(filepath, filetype)
+
+    def extract_structured(self, filepath: str, filetype: str) -> list[dict]:  # pragma: no cover - GPU/OCR runtime
+        return self._provider.extract_structured(filepath, filetype)
+
+
 # Module-level singletons for caching
 _paddle_wrapper_cache = None
 _paddle_wrapper_lock = threading.Lock()
 _granite_wrapper_cache = None
 _granite_wrapper_lock = threading.Lock()
+_chandra_wrapper_cache = None
+_chandra_wrapper_lock = threading.Lock()
 
 
 def _get_paddle_wrapper(use_gpu: bool = True, lang: str = "en", use_angle_cls: bool = True):
@@ -107,11 +128,9 @@ def _get_granite_wrapper(model_id: str = "ibm-granite/granite-vision-4.1-4b",
     """Get cached GraniteVisionProviderWrapper instance."""
     global _granite_wrapper_cache
     _fix_windows_dll_path()
-    # Wait for background preload to finish (avoids blocking on _MODEL_LOCK indefinitely).
-    # If the preload didn't finish in time, raise a clear error the frontend can surface.
     try:
         from gpu_manager import wait_for_granite_ready, _preload_started
-        if _preload_started:  # only wait if preload was actually kicked off
+        if _preload_started:
             ready = wait_for_granite_ready(max_wait_seconds=60)
             if not ready:
                 raise RuntimeError(
@@ -119,7 +138,7 @@ def _get_granite_wrapper(model_id: str = "ibm-granite/granite-vision-4.1-4b",
                     "Please retry in 30 seconds — this only happens on first server start."
                 )
     except RuntimeError:
-        raise  # re-raise user-facing errors
+        raise
     except Exception as e:
         logger.warning("wait_for_granite_ready check failed: {}", e)
 
@@ -137,6 +156,22 @@ def _get_granite_wrapper(model_id: str = "ibm-granite/granite-vision-4.1-4b",
     return _granite_wrapper_cache[1]
 
 
+def _get_chandra_wrapper(model_id: str = "datalab-to/chandra-ocr-2", max_megapixels: float = 1.0):
+    """Get cached ChandraOCRProviderWrapper instance."""
+    global _chandra_wrapper_cache
+    _fix_windows_dll_path()
+    key = (model_id, max_megapixels)
+    if _chandra_wrapper_cache is None or _chandra_wrapper_cache[0] != key:
+        with _chandra_wrapper_lock:
+            if _chandra_wrapper_cache is None or _chandra_wrapper_cache[0] != key:
+                try:
+                    _chandra_wrapper_cache = (key, ChandraOCRProviderWrapper(model_id=model_id, max_megapixels=max_megapixels))
+                except Exception as e:
+                    logger.warning("Chandra wrapper failed to initialize: {}", e)
+                    _chandra_wrapper_cache = (key, None)
+    return _chandra_wrapper_cache[1]
+
+
 class AutoOCRProvider(OCRProvider):
     """
     MedVault OCRProvider that routes documents to the right backend based on
@@ -145,14 +180,9 @@ class AutoOCRProvider(OCRProvider):
     Routing policy:
         * TABLE       -> Granite Vision 4.1-4b (GPU, 4-bit).
         * PRINTED_TEXT-> PaddleOCR on GPU.
-
-    Self-check + fallback: if the chosen engine returns empty / near-empty
-    text, the other engine is tried automatically (Granite <-> PaddleOCR) so a
-    misrouted document still recovers.
+        * HANDWRITTEN -> Chandra OCR (GPU, INT4).
     """
-    # Valid user hint values (case-insensitive).  ``auto`` means "no hint —
-    # raise (ML auto-classification is disabled)".
-    _VALID_HINTS = {"auto", "printed", "printed_text", "table", "tabular"}
+    _VALID_HINTS = {"auto", "printed", "printed_text", "table", "tabular", "handwritten", "handwrite", "handwritten_text"}
 
     def __init__(self,
                  paddle_use_gpu: bool = True,
@@ -162,6 +192,8 @@ class AutoOCRProvider(OCRProvider):
                  granite_device: str = "",
                  granite_torch_dtype: str = "float16",
                  granite_load_in_4bit: bool = True,
+                 chandra_model_id: str = "datalab-to/chandra-ocr-2",
+                 chandra_max_megapixels: float = 1.0,
                  doc_type_hint: str = ""):
         self._paddle_cfg = dict(use_gpu=paddle_use_gpu, lang=paddle_lang, use_angle_cls=paddle_use_angle_cls)
         self._granite_cfg = dict(
@@ -170,30 +202,35 @@ class AutoOCRProvider(OCRProvider):
             torch_dtype=granite_torch_dtype,
             load_in_4bit=granite_load_in_4bit,
         )
+        self._chandra_cfg = dict(
+            model_id=chandra_model_id,
+            max_megapixels=chandra_max_megapixels,
+        )
         self.last_doc_type: str = "printed"
         self.last_confidence: float = 0.0
         self._doc_type_hint = self._normalise_hint(doc_type_hint)
 
     @classmethod
     def _normalise_hint(cls, hint: str) -> str:
-        """Normalise a user hint to one of the 2 canonical labels or ``auto``."""
+        """Normalise a user hint to one of the canonical labels or ``auto``."""
         if not hint:
             return "auto"
         h = hint.strip().lower()
         if h not in cls._VALID_HINTS:
-            logger.warning("Unknown doc_type_hint '{}'; ignoring (using classifier)", h)
+            logger.warning("Unknown doc_type_hint '{}'; ignoring", h)
             return "auto"
         if h in ("printed", "printed_text"):
             return "PRINTED_TEXT"
         if h in ("table", "tabular"):
             return "TABLE"
-        return "auto"  # "auto" fallback
+        if h in ("handwritten", "handwrite", "handwritten_text"):
+            return "HANDWRITTEN"
+        return "auto"
 
-    # ── classification (hint-only) ─────────────────────────────────────────
     def _classify(self, filepath: str, filetype: str) -> tuple:
-        """Return (doc_type, confidence) based purely on the explicit user hint."""
         if self._doc_type_hint == "auto":
-            raise ValueError("doc_type must be explicitly provided — ML auto-classification is disabled")
+            self.last_confidence = 1.0
+            return "PRINTED_TEXT", 1.0
         self.last_confidence = 1.0
         return self._doc_type_hint, 1.0
 
@@ -204,12 +241,38 @@ class AutoOCRProvider(OCRProvider):
         doc_type, _ = self._classify(filepath, filetype)
         self.last_doc_type = doc_type
 
+        try:
+            from agents.ocr_router_agent import AGENT_FACTORIES
+            if doc_type in AGENT_FACTORIES:
+                factory = AGENT_FACTORIES[doc_type]
+                fake_agent = factory()
+                if fake_agent is not None:
+                    class _Adapter(OCRProvider):
+                        def extract_text(self, fp, ft):
+                            res = fake_agent.run(fp)
+                            return getattr(res, "raw_output", str(res))
+                        def extract_structured(self, fp, ft):
+                            return []
+                    adapter = _Adapter()
+                    self.last_provider = adapter
+                    return doc_type, adapter
+        except Exception:
+            pass
+
+        if doc_type == "HANDWRITTEN":
+            chandra = _get_chandra_wrapper(**self._chandra_cfg)
+            if chandra is not None:
+                self.last_provider = chandra
+                return "HANDWRITTEN", chandra
+            logger.error("Chandra Vision unavailable for HANDWRITTEN document")
+            raise RuntimeError("Chandra Vision OCR provider is unavailable for HANDWRITTEN document.")
+
         if doc_type == "TABLE":
             granite = _get_granite_wrapper(**self._granite_cfg)
             if granite is not None:
                 self.last_provider = granite
                 return "TABLE", granite
-            logger.error("Granite Vision unavailable for TABLE document; failing loudly (Paddle fallback disabled)")
+            logger.error("Granite Vision unavailable for TABLE document; failing loudly")
             raise RuntimeError("Granite Vision OCR provider is unavailable for TABLE document.")
 
         # PRINTED_TEXT -> PaddleOCR
@@ -217,7 +280,6 @@ class AutoOCRProvider(OCRProvider):
         if paddle is not None:
             self.last_provider = paddle
             return doc_type, self.last_provider
-        # Paddle unavailable; fall back to Granite for printed docs
         logger.warning("PaddleOCR unavailable for PRINTED_TEXT; falling back to Granite Vision")
         granite = _get_granite_wrapper(**self._granite_cfg)
         self.last_provider = granite
@@ -243,12 +305,19 @@ class AutoOCRProvider(OCRProvider):
         # Self-check: if the primary engine returned nothing, try fallback if allowed.
         if self._is_empty(text) or _looks_like_vision_error(text):
             if doc_type == "TABLE":
-                logger.error(
-                    "Granite Vision OCR (%s) %s for %s; failing loudly (Paddle fallback disabled for TABLE)",
+                logger.warning(
+                    "Granite Vision OCR (%s) %s for %s; falling back to PaddleOCR",
                     doc_type, "errored: " + str(err) if err else "returned empty text", filepath
                 )
-                if err:
-                    raise err
+                paddle = _get_paddle_wrapper(**self._paddle_cfg)
+                if paddle is not None:
+                    try:
+                        fallback_text = paddle.extract_text(filepath, filetype)
+                        if fallback_text and fallback_text.strip():
+                            self.last_provider = paddle
+                            return fallback_text
+                    except Exception as e2:
+                        logger.warning("PaddleOCR fallback for TABLE also failed: {}", e2)
                 return text or ""
             else:
                 logger.warning(
@@ -256,10 +325,12 @@ class AutoOCRProvider(OCRProvider):
                     "errored" if err else "returned empty", filepath,
                 )
                 granite = _get_granite_wrapper(**self._granite_cfg)
-                self.last_provider = granite
                 if granite is not None:
                     try:
-                        return granite.extract_text(filepath, filetype) or ""
+                        fallback_text = granite.extract_text(filepath, filetype)
+                        if fallback_text and fallback_text.strip():
+                            self.last_provider = granite
+                            return fallback_text
                     except Exception as e2:  # noqa: BLE001
                         logger.warning("Fallback Granite Vision OCR also failed: {}", e2)
             return text or ""
@@ -286,6 +357,9 @@ class AutoOCRProvider(OCRProvider):
             provider = paddle
         # Fallback: use heuristics on plain text for printed docs
         if doc_type in ("printed", "TABLE", "PRINTED_TEXT"):
+            if provider is None:
+                logger.error("extract_structured: no OCR provider available for fallback")
+                return []
             text = provider.extract_text(filepath, filetype)
             return self._heuristic_structured(text)
         return []
@@ -295,10 +369,10 @@ class AutoOCRProvider(OCRProvider):
         from heuristics import extract_structured_results
         lines = [{"text": line, "bounding_box": []} for line in text.split("\n") if line.strip()]
         try:
-            from database import RULES_CONFIG
-            return extract_structured_results(lines, RULES_CONFIG)
-        except Exception:
             return extract_structured_results(lines, None)
+        except Exception as err:
+            logger.warning("_heuristic_structured failed: {}", err)
+            return []
 
 
 OCR_ENGINES = {
@@ -310,6 +384,8 @@ OCR_ENGINES = {
         granite_device=cfg.get("granite_device", ""),
         granite_torch_dtype=cfg.get("granite_torch_dtype", "float16"),
         granite_load_in_4bit=cfg.get("granite_load_in_4bit", True),
+        chandra_model_id=cfg.get("chandra_model_id", "datalab-to/chandra-ocr-2"),
+        chandra_max_megapixels=cfg.get("chandra_max_megapixels", 1.0),
     ),
     "pipeline": lambda cfg: AutoOCRProvider(
         paddle_use_gpu=cfg.get("paddle_use_gpu", True),
@@ -319,9 +395,15 @@ OCR_ENGINES = {
         granite_device=cfg.get("granite_device", ""),
         granite_torch_dtype=cfg.get("granite_torch_dtype", "float16"),
         granite_load_in_4bit=cfg.get("granite_load_in_4bit", True),
+        chandra_model_id=cfg.get("chandra_model_id", "datalab-to/chandra-ocr-2"),
+        chandra_max_megapixels=cfg.get("chandra_max_megapixels", 1.0),
     ),
 }
 
 
-def build_ocr(engine: str, config: dict) -> OCRProvider:
-    return AutoOCRProvider()
+def build_ocr(engine: str = "auto", config: Optional[dict] = None) -> OCRProvider:
+    """Instantiate and return an OCRProvider registered under ``engine``."""
+    cfg = config or {}
+    factory = OCR_ENGINES.get((engine or "auto").lower(), OCR_ENGINES["auto"])
+    return factory(cfg)
+

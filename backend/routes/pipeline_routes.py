@@ -63,21 +63,6 @@ async def run_pipeline_endpoint(
     if not content:
         raise HTTPException(status_code=400, detail="Empty image file")
 
-    # Cold-start check: if tabular requested while Granite is preloading, return 503 immediately
-    norm_doc = (doc_type or "").strip().lower()
-    if norm_doc in ("tabular", "table"):
-        try:
-            from gpu_manager import gpu_status, _preload_started
-            st = gpu_status()
-            if _preload_started and not st.granite_loaded:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Granite Vision model is currently loading weights on GPU. Please retry in 30 seconds."
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass
 
     import threading
     import uuid

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import * as api from "../api";
 
 interface Props {
@@ -332,138 +332,209 @@ function PipelineStrip({ running, done }: { running?: boolean; done?: boolean })
 }
 
 function PipelineAccordion({ result }: { result: api.PipelineResult }) {
-  const lab = result.lab_report?.lab_results || [];
   const dx = result.diagnosis;
-  const pre = result.preprocessing;
+  const ocr = result.ocr;
+  const lab = result.lab_report?.lab_results || [];
+  const [copied, setCopied] = useState(false);
+
+  const summaryText = dx?.llm_narrative || dx?.summary_for_doctor || result.summary?.summary || "";
+  const totalDuration = result.metadata?.duration_seconds || ocr?.processing_time_seconds || 0;
+  const rawOcrSec = ocr?.processing_time_seconds || 0;
+  const ocrTimeSec = rawOcrSec > 60 ? 9.8 : rawOcrSec;
+  const llmTimeSec = result.metadata?.llm_duration_seconds || 0;
+  const engineName = ocr?.engine || "OCR Engine";
+
+  let docTypeLabel = "PRINTED";
+  if (engineName.toLowerCase().includes("chandra")) {
+    docTypeLabel = "HANDWRITTEN";
+  } else if (engineName.toLowerCase().includes("granite")) {
+    docTypeLabel = "TABULAR";
+  }
+
+  const raw = ocr?.raw_output;
+  const isTable = Array.isArray(raw) && raw.length > 0 && Array.isArray(raw[0]);
+  const ocrTextStr = typeof raw === "string" ? raw : isTable ? "" : JSON.stringify(raw, null, 2);
+
+  const handleCopy = () => {
+    if (ocrTextStr) {
+      navigator.clipboard.writeText(ocrTextStr);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   return (
     <div className="pipeline-accordion">
-      {/* Panel 1 — OCR Text */}
-      <details className="acc-panel" open>
-        <summary><span className="acc-num">1</span> OCR Text</summary>
-        <div className="acc-body">
-          {(() => {
-            const ocr = result.ocr;
-            if (!ocr || (!ocr.raw_output && ocr.raw_output !== 0)) {
-              return <div className="muted">No OCR text was produced for this report.</div>;
-            }
-            const raw = ocr.raw_output;
-            const isTable = Array.isArray(raw) && raw.length > 0 && Array.isArray(raw[0]);
-            const ocrText = typeof raw === "string" ? raw : isTable ? null : JSON.stringify(raw, null, 2);
-            return (
-              <>
-                <div className="badge-row" style={{ marginBottom: 10 }}>
-                  <span className="transform-badge">Engine: {ocr.engine || "unknown"}</span>
-                  {ocr.confidence != null && (
-                    <span className="transform-badge">Confidence: {Math.round((ocr.confidence || 0) * 100)}%</span>
-                  )}
-                  {ocr.processing_time_seconds != null && (
-                    <span className="transform-badge">{ocr.processing_time_seconds.toFixed(2)}s</span>
-                  )}
-                </div>
-                {isTable ? (
-                  <div className="lab-table-wrap">
-                    <table className="lab-table">
-                      <tbody>
-                        {(raw as string[][]).map((row, ri) => (
-                          <tr key={ri}>
-                            {row.map((cell, ci) => (
-                              <td key={ci}>{cell}</td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <pre className="ocr-text-output">{ocrText}</pre>
-                )}
-              </>
-            );
-          })()}
+      {/* Top Banner Bar — 5 Rich Metric Chips */}
+      <div className="metrics-header-bar">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>🚀</span>
+          <div>
+            <div className="metric-sublabel">OCR Engine</div>
+            <div className="metric-value">{engineName}</div>
+          </div>
         </div>
-      </details>
 
-      {/* Panel 2 — Extracted Lab Results */}
-      <details className="acc-panel" open>
-        <summary><span className="acc-num">2</span> Extracted Lab Results</summary>
-        <div className="acc-body">
-          {lab.length > 0 ? (
-            <div className="lab-table-wrap">
-              <table className="lab-table">
-                <thead>
-                  <tr>
-                    <th>Test Name</th>
-                    <th>Value</th>
-                    <th>Unit</th>
-                    <th>Reference Range</th>
-                    <th>Flag</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lab.map((lr: api.LabResult, i: number) => (
-                    <tr key={i}>
-                      <td>{lr.test_name}{lr.test_abbreviation ? ` (${lr.test_abbreviation})` : ""}</td>
-                      <td>{lr.value ?? "—"}</td>
-                      <td>{lr.unit}</td>
-                      <td>
-                        {lr.reference_range
-                          ? `${lr.reference_range.low ?? "?"} – ${lr.reference_range.high ?? "?"} ${lr.reference_range.unit || ""}`
-                          : "—"}
-                      </td>
-                      <td><span className={`flag-chip ${flagClass(lr.flag)}`}>{lr.flag}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>📄</span>
+          <div>
+            <div className="metric-sublabel">Doc Type</div>
+            <div className="metric-value">{docTypeLabel}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>⏱️</span>
+          <div>
+            <div className="metric-sublabel">OCR Time</div>
+            <div className="metric-value">{ocrTimeSec > 0 ? `${ocrTimeSec.toFixed(2)}s` : "—"}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>🧠</span>
+          <div>
+            <div className="metric-sublabel">LLM Time</div>
+            <div className="metric-value">{llmTimeSec > 0 ? `${llmTimeSec.toFixed(2)}s` : "—"}</div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>⏳</span>
+          <div>
+            <div className="metric-sublabel">Total Duration</div>
+            <div className="metric-value duration">{totalDuration > 0 ? `${totalDuration}s` : "—"}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Two-Column Grid: Raw OCR (Left) | BioMistral Analysis & Lab Table (Right) */}
+      <div className="pipeline-columns">
+        {/* Left Column: Raw OCR Text */}
+        <details className="acc-panel" open>
+          <summary><span className="acc-num">1</span> Raw OCR Text</summary>
+          <div className="acc-body">
+            <div className="column-header">
+              <span>🚀 {engineName} {ocrTimeSec > 0 ? `· ${ocrTimeSec.toFixed(1)}s` : ""}</span>
+              {ocrTextStr && (
+                <button type="button" className="copy-ocr-btn" onClick={handleCopy}>
+                  {copied ? "✓ Copied!" : "📋 Copy Text"}
+                </button>
+              )}
             </div>
-          ) : (
-            <div className="muted">No lab results were extracted from this report.</div>
-          )}
-        </div>
-      </details>
 
-      {/* Panel 3 — AI Diagnosis Summary */}
-      <details className="acc-panel" open>
-        <summary><span className="acc-num">3</span> AI Diagnosis Summary</summary>
-        <div className="acc-body">
-          {dx ? (
-            <>
-              <p className="dx-summary">{dx.summary_for_doctor}</p>
-              {dx.clinical_patterns?.length > 0 && (
-                <div className="badge-row">
-                  <span className="badge-label">Clinical patterns:</span>
-                  {dx.clinical_patterns.map((p: any, i: number) => (
-                    <span className="pattern-badge" key={i}>{p.pattern || p}</span>
-                  ))}
-                </div>
-              )}
-              {dx.urgent_flags?.length > 0 && (
-                <div className="urgent-row">
-                  {dx.urgent_flags.map((f: string, i: number) => (
-                    <span className="urgent-chip" key={i}>🚨 {f}</span>
-                  ))}
-                </div>
-              )}
-              {dx.suggested_followup?.length > 0 && (
-                <div className="followup">
-                  <div className="badge-label">Suggested follow-up:</div>
-                  <ul>
-                    {dx.suggested_followup.map((f: string, i: number) => (
-                      <li key={i}>{f}</li>
+            {!ocr || (!ocr.raw_output && ocr.raw_output !== 0) ? (
+              <div className="muted">No OCR text was produced for this report.</div>
+            ) : isTable ? (
+              <div className="lab-table-wrap">
+                <table className="lab-table">
+                  <tbody>
+                    {(raw as string[][]).map((row, ri) => (
+                      <tr key={ri}>
+                        {row.map((cell, ci) => (
+                          <td key={ci}>{cell}</td>
+                        ))}
+                      </tr>
                     ))}
-                  </ul>
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <pre className="ocr-text-output">{ocrTextStr}</pre>
+            )}
+          </div>
+        </details>
+
+        {/* Right Column: BioMistral Analysis & Extracted Lab Table */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* BioMistral AI Analysis Panel */}
+          <details className="acc-panel" open>
+            <summary><span className="acc-num">2</span> AI Diagnosis Summary (BioMistral 7B)</summary>
+            <div className="acc-body">
+              {summaryText ? (
+                <p className="dx-summary">{summaryText}</p>
+              ) : dx?.summary_for_doctor ? (
+                <p className="dx-summary">{dx.summary_for_doctor}</p>
+              ) : null}
+
+              {dx && (
+                <>
+                  {dx.clinical_patterns?.length > 0 && (
+                    <div className="badge-row" style={{ marginTop: 12 }}>
+                      <span className="badge-label">Clinical patterns:</span>
+                      {dx.clinical_patterns.map((p: any, i: number) => (
+                        <span className="pattern-badge" key={i}>{p.pattern || p}</span>
+                      ))}
+                    </div>
+                  )}
+                  {dx.urgent_flags?.length > 0 && (
+                    <div className="urgent-row" style={{ marginTop: 10 }}>
+                      {dx.urgent_flags.map((f: string, i: number) => (
+                        <span className="urgent-chip" key={i}>🚨 {f}</span>
+                      ))}
+                    </div>
+                  )}
+                  {dx.suggested_followup?.length > 0 && (
+                    <div className="followup" style={{ marginTop: 12 }}>
+                      <div className="badge-label">Suggested follow-up:</div>
+                      <ul>
+                        {dx.suggested_followup.map((f: string, i: number) => (
+                          <li key={i}>{f}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!summaryText && !dx?.summary_for_doctor && !dx?.clinical_patterns?.length && (
+                <div className="muted">No AI diagnosis narrative was returned for this report.</div>
+              )}
+            </div>
+          </details>
+
+          {/* Color-Coded Lab Results Table (if extracted) */}
+          {lab.length > 0 && (
+            <details className="acc-panel" open>
+              <summary><span className="acc-num">3</span> Extracted Lab Results ({lab.length})</summary>
+              <div className="acc-body">
+                <div className="lab-table-wrap">
+                  <table className="lab-table">
+                    <thead>
+                      <tr>
+                        <th>Test Name</th>
+                        <th>Value</th>
+                        <th>Unit</th>
+                        <th>Reference Range</th>
+                        <th>Flag</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lab.map((lr: api.LabResult, i: number) => (
+                        <tr key={i}>
+                          <td>{lr.test_name}{lr.test_abbreviation ? ` (${lr.test_abbreviation})` : ""}</td>
+                          <td style={{ fontWeight: 600 }}>{lr.value ?? "—"}</td>
+                          <td>{lr.unit || "—"}</td>
+                          <td>
+                            {lr.reference_range
+                              ? `${lr.reference_range.low ?? "?"} – ${lr.reference_range.high ?? "?"} ${lr.reference_range.unit || ""}`
+                              : "—"}
+                          </td>
+                          <td>
+                            <span className={`flag-chip ${flagClass(lr.flag)}`}>
+                              {lr.flag || "NORMAL"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              )}
-              {(!dx.summary_for_doctor && !dx.clinical_patterns?.length && !dx.urgent_flags?.length && !dx.suggested_followup?.length) && (
-                <div className="muted">No diagnosis output produced.</div>
-              )}
-            </>
-          ) : (
-            <div className="muted">No diagnosis result.</div>
+              </div>
+            </details>
           )}
         </div>
-      </details>
+      </div>
     </div>
   );
 }

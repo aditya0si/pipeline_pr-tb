@@ -1429,6 +1429,43 @@ textarea.neu-input { resize: vertical; min-height: 60px; }
 @keyframes accIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .muted { color: var(--text-muted); font-size: 13px; }
 
+/* ══ Pipeline Two-Column Grid Layout ═══════════════════ */
+.pipeline-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .pipeline-columns {
+    grid-template-columns: 1fr;
+  }
+}
+.column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.copy-ocr-btn {
+  background: var(--bg-alt);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.copy-ocr-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* Panel 1 — classification */
 .class-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .class-chip {

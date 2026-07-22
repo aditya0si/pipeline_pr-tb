@@ -88,23 +88,21 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # GPU optional — never block startup on it
             print(f"[startup] GPU preload skipped: {e}")
     yield
+    # Shutdown teardown
+    try:
+        from gpu_manager import evict_chandra, evict_ollama
+        evict_chandra()
+        evict_ollama(settings.ollama_base_url, settings.ollama_model)
+    except Exception:
+        pass
 
 
 app = FastAPI(title="MedVault Hepatology OCR Pipeline", lifespan=lifespan)
 
-# CORS — allow the Vite dev server and the production SPA origin.
+# CORS — allow Vite dev server on any localhost port, as well as preview ports.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3003",
-        "http://127.0.0.1:3003",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-    ],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):[0-9]+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

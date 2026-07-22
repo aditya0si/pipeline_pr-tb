@@ -32,9 +32,13 @@ script (`setup_env.ps1`) enforces this constraint for you.
 | RAM | 8 GB | 16 GB |
 | GPU | — | NVIDIA with 8 GB VRAM (CUDA 12.x) |
 | OS | Windows 10+ | Windows 11 |
+| Tesseract OCR (Optional) | Tesseract v5.0+ | `tesseract-ocr` + `tesseract-ocr-hin` |
 
 > **Note:** `uv` is a fast Python package manager used by our setup script.
 > Install it from https://docs.astral.sh/uv/ before proceeding.
+> **Optional Tesseract pre-OCR assist**: To enable rough pre-OCR assist for Granite Vision (matching `granite_vision.ipynb`):
+> - **Ubuntu/Debian**: `sudo apt-get install -y tesseract-ocr tesseract-ocr-hin`
+> - **Windows**: Download Tesseract installer from UB-Mannheim or run `winget install UB-Mannheim.TesseractOCR` (add `C:\Program Files\Tesseract-OCR` to PATH).
 
 ---
 

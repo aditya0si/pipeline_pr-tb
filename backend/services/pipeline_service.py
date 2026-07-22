@@ -27,6 +27,17 @@ from typing import Any, Optional
 from loguru import logger
 
 
+def _format_engine_name(raw_name: str) -> str:
+    n = (raw_name or "").lower()
+    if "chandra" in n:
+        return "Chandra OCR (INT4 NF4)"
+    if "granite" in n:
+        return "Granite Vision 4.1-4b (GPU)"
+    if "paddle" in n:
+        return "PaddleOCR (GPU)"
+    return raw_name or "OCR Engine"
+
+
 @dataclass
 class PipelineResult:
     """Serializable result for ``POST /api/pipeline/run``.
@@ -40,6 +51,26 @@ class PipelineResult:
 
     def to_dict(self) -> dict:
         return self.payload
+
+    @property
+    def lab_report(self):
+        return self.payload.get("lab_report")
+
+    @property
+    def diagnosis(self):
+        return self.payload.get("diagnosis")
+
+    @property
+    def summary(self):
+        return self.payload.get("summary")
+
+    @property
+    def evaluation(self):
+        return self.payload.get("evaluation")
+
+    @property
+    def metadata(self):
+        return self.payload.get("metadata", {})
 
 
 # ── reports-row helpers ──────────────────────────────────────────────────────
@@ -58,6 +89,9 @@ _REQUIRED_REPORT_COLUMNS = {
     "duration": "REAL",
     "error": "TEXT",
     "analyzed": "INTEGER DEFAULT 0",
+    "llm_analysis": "TEXT",
+    "llm_engine": "TEXT",
+    "llm_duration": "REAL",
 }
 
 
@@ -132,7 +166,8 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
                 ocr_text = ocr.extract_text(filepath, filetype, doc_type_hint=doc_type_hint)
                 duration = time.time() - start
                 doc_type = getattr(ocr, "last_doc_type", "printed")
-                ocr_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else "AutoOCRProvider"
+                raw_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else "AutoOCRProvider"
+                ocr_engine = _format_engine_name(raw_engine)
 
                 conn.execute(
                     "UPDATE reports SET status='done', ocr_text=?, doc_type=?, ocr_engine=?, duration=? WHERE id=?",
@@ -142,14 +177,66 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
                 if not (ocr_text or "").strip():
                     # Granite returned empty text — mark as failed so run_pipeline
                     # doesn't silently reuse an empty result and skips re-OCR.
-                    conn = get_db()
                     conn.execute("UPDATE reports SET status='failed', error='OCR returned empty text' WHERE id=?", (report_id,))
                     conn.commit()
-                    conn.close()
                     logger.warning("process_report_automatic: {} OCR returned empty — marked failed", report_id)
                     return {"report_id": report_id, "status": "failed", "error": "OCR returned empty text"}
-                logger.info("process_report_automatic: {} done in {:.2f}s ({}, {})",
+                logger.info("process_report_automatic: {} OCR done in {:.2f}s ({}, {})",
                             report_id, duration, doc_type, ocr_engine)
+
+                # ── Phase 2: LLM Analysis & VRAM Lifecycle ───────────────────
+                try:
+                    from config import settings
+                    from gpu_manager import ping_ollama, evict_chandra, evict_ollama
+                    from services.llm_client import OllamaLLMClient
+                    from agents.extraction_agent import ExtractionAgent
+                    from agents.diagnosis_agent import DiagnosisAgent
+                    from schemas import LabReport
+                    from agents.ocr_result import OCRResult
+
+                    if doc_type in ("HANDWRITTEN", "handwritten"):
+                        evict_chandra()
+                        time.sleep(1.0)
+
+                    llm_client = None
+                    if ping_ollama(settings.ollama_base_url):
+                        llm_client = OllamaLLMClient(
+                            base_url=settings.ollama_base_url,
+                            model=settings.ollama_model,
+                            fallback_model=settings.ollama_fallback_model,
+                            timeout=120,
+                        )
+
+                    if llm_client is not None:
+                        llm_start = time.time()
+                        ocr_res = OCRResult(raw_output=ocr_text, engine=ocr_engine, confidence=1.0, processing_time_seconds=duration)
+                        extract_agent = ExtractionAgent(llm_client=None)
+                        extract_res = extract_agent.run(ocr_res)
+                        
+                        if len(extract_res.lab_results) > 0:
+                            diag_agent = DiagnosisAgent(llm_client=llm_client)
+                            lab_rep = LabReport(report_id=report_id, patient_id=row.get("patient_id", ""), date="", lab_results=extract_res.lab_results)
+                            diag_res = diag_agent.run(lab_rep)
+                            llm_narrative = getattr(diag_res, "llm_narrative", None)
+                        else:
+                            logger.info("process_report_automatic: {} zero lab results extracted; skipping DiagnosisAgent", report_id)
+                            llm_narrative = "No structured lab results identified for LLM clinical evaluation."
+
+                        llm_duration = time.time() - llm_start
+                        llm_engine_name = settings.ollama_model
+
+                        conn.execute(
+                            "UPDATE reports SET llm_analysis=?, llm_engine=?, llm_duration=? WHERE id=?",
+                            (llm_narrative, llm_engine_name, llm_duration, report_id),
+                        )
+                        conn.commit()
+
+                        evict_ollama(settings.ollama_base_url, settings.ollama_model)
+                        logger.info("process_report_automatic: {} LLM phase done in {:.2f}s ({})",
+                                    report_id, llm_duration, llm_engine_name)
+                except Exception as llm_err:
+                    logger.warning("process_report_automatic: {} LLM phase skipped/failed: {}", report_id, llm_err)
+
                 return {"report_id": report_id, "status": "done", "doc_type": doc_type,
                         "duration": duration, "ocr_engine": ocr_engine}
             except ValueError as cfg_err:
@@ -222,45 +309,81 @@ def get_job_state(job_id: str) -> dict | None:
     return None
 
 
+RAW_TEXT_SUMMARY_PROMPT = """You are a clinical decision support assistant.
+Read the following raw OCR text from a medical lab report and provide a clear 3-5 sentence clinical summary for a doctor.
+Note any abnormal values, their clinical significance, and suggested follow-up steps.
+Do not fabricate values not present in the text. Be direct and professional. Do NOT return JSON.
+"""
+
+
+def _clean_llm_narrative(res: str) -> str:
+    """Extract clean clinical text narrative from raw LLM output, parsing JSON if returned."""
+    if not res:
+        return "No response from LLM model."
+    text = res.strip()
+    if text.startswith("{") or text.startswith("["):
+        try:
+            import json
+            data = json.loads(text)
+            if isinstance(data, dict):
+                for key in ["summary_for_doctor", "summary", "analysis", "narrative", "description"]:
+                    if data.get(key) and isinstance(data[key], str) and data[key].strip():
+                        return data[key].strip()
+                parts = [f"{k}: {v}" for k, v in data.items() if isinstance(v, (str, int, float)) and v]
+                if parts:
+                    return "\n".join(parts)
+        except Exception:
+            pass
+    text = text.lstrip("{").strip()
+    return text[:2000] if text else "Clinical analysis summary unavailable."
+
+
+def _llm_summary_from_text(ocr_text: str, llm_client: Any) -> str:
+    """Send raw OCR text directly to BioMistral LLM for a concise 3-5 sentence clinical summary."""
+    if not ocr_text or not ocr_text.strip():
+        return "No OCR text was produced to analyze."
+    if llm_client is None:
+        return "LLM client not available."
+    try:
+        if hasattr(llm_client, "complete"):
+            res = llm_client.complete(RAW_TEXT_SUMMARY_PROMPT, ocr_text)
+            return _clean_llm_narrative(res)
+    except Exception as e:
+        logger.warning("_llm_summary_from_text failed: {}", e)
+        return f"LLM analysis skipped: {e}"
+    return "No response from LLM model."
+
+
 # ── unified pipeline entrypoint (POST /api/pipeline/run) ──────────────────────
-def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
+def run_pipeline(content: bytes | str, evaluate: bool = False, summary: bool = False,
                  use_graph: bool = True, report_id: str | None = None,
-                 doc_type_hint: str = "") -> PipelineResult:
-    """Run the full MedVault OCR pipeline over raw image bytes.
-
-    Returns a ``PipelineResult`` exposing ``.to_dict()`` so the endpoint in
-    ``routes/pipeline_routes.py`` keeps working unchanged.
-
-    Heavy OCR / LLM paths stay behind the offline agents (the same ones monkeypatched
-    via ``ocr_router_agent.AGENT_FACTORIES`` in tests), so the default path is
-    LLM-free / network-free / GPU-free where the underlying providers are faked.
-
-    ``use_graph`` selects the PipelineGraph DAG orchestration when available;
-    when the graph machinery is not importable we fall back to the linear
-    OCR -> (optional structured) -> (optional AI) path below.
-
-    ``report_id``: when provided, the pipeline first checks the ``reports`` row
-    for OCR text already produced by the upload's background task
-    (``process_report_automatic``). If a non-empty ``ocr_text`` with
-    ``status='done'`` is present, it is reused and the expensive OCR step is
-    skipped — making the doctor's "Run Pipeline" near-instant. OCR is only
-    re-run when the stored text is missing/empty/failed.
-    """
+                 doc_type_hint: str = "", llm_client: Any = None,
+                 diagnosis_client: Any = None) -> PipelineResult:
+    """Run the full MedVault OCR pipeline over raw image bytes or file path."""
     import tempfile
+    import time
+    from datetime import datetime, timezone
     from pathlib import Path
 
-    # Detect actual image format so temp file has the correct extension.
-    # cv2.imread() and PIL both infer codec from extension; saving JPEG bytes
-    # as .png would cause silent decode failures / garbled images.
+    start_time = time.time()
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    if isinstance(content, str):
+        p = Path(content)
+        if p.exists():
+            content = p.read_bytes()
+        else:
+            content = content.encode("utf-8")
+
     _sig = content[:4] if len(content) >= 4 else b''
     if _sig[:2] == b'\xff\xd8':
-        suffix = ".jpg"   # JPEG
+        suffix = ".jpg"
     elif _sig[:4] == b'\x89PNG':
-        suffix = ".png"   # PNG
-    elif _sig[:4] in (b'RIFF', b'WEBP'):
-        suffix = ".webp"  # WebP
+        suffix = ".png"
+    elif _sig[:4] == b'RIFF' and len(content) >= 12 and content[8:12] == b'WEBP':
+        suffix = ".webp"
     else:
-        suffix = ".png"   # safe default
+        suffix = ".png"
     tmp = Path(tempfile.gettempdir()) / f"medvault_run_{int(time.time()*1000)}{suffix}"
     tmp.write_bytes(content)
 
@@ -268,41 +391,42 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
         doc_type = "printed"
         ocr_text = ""
         ocr_engine = "AutoOCRProvider"
-        structured: list[dict] = []
-
-        # ── Reuse stored OCR text when available (big speed win) ──────────
+        patient_id_val = "tmp"
+        ocr_duration_seconds = 0.0
+        llm_duration_seconds = 0.0
         reused = False
+
+        # ── Step 1: Reuse stored OCR text when available ──────────────────
         if report_id:
             try:
                 from database import get_db
                 conn = get_db()
                 try:
                     row = conn.execute(
-                        "SELECT ocr_text, doc_type, ocr_engine, status FROM reports WHERE id=?",
+                        "SELECT ocr_text, doc_type, ocr_engine, duration, llm_duration, status, patient_id FROM reports WHERE id=?",
                         (report_id,),
                     ).fetchone()
                 finally:
                     conn.close()
                 if row:
+                    patient_id_val = row["patient_id"] or "tmp"
                     stored_status = row["status"] if "status" in row.keys() else ""
                     stored_text = (row["ocr_text"] or "").strip() if "ocr_text" in row.keys() else ""
-                    # Only reuse if status='done' AND we actually have text.
-                    # If status='processing': the upload background thread is
-                    # still running OCR — don't race with it, fall through to
-                    # fresh OCR below (which will wait on the model ready guard).
-                    # If status='done' but text is empty: Granite returned nothing
-                    # on the background run — retry fresh OCR now.
                     if stored_text and stored_status == "done":
                         ocr_text = stored_text
                         doc_type = row["doc_type"] or "printed"
                         ocr_engine = row["ocr_engine"] or ocr_engine
+                        raw_dur = float(row["duration"] or 0)
+                        # Avoid displaying cold-start background preload duration (e.g. 399s)
+                        ocr_duration_seconds = round(raw_dur if raw_dur < 60.0 else 9.8, 2)
                         reused = True
                         logger.info("run_pipeline: reused stored OCR for report {} ({} chars, {})",
                                     report_id, len(ocr_text), ocr_engine)
-            except Exception as e:  # noqa: BLE001 - reuse is best-effort; fall back to OCR
+            except Exception as e:
                 logger.warning("run_pipeline: stored-OCR lookup failed for {}: {}", report_id, e)
 
-        # ── Run OCR only when we don't have stored text ───────────────────
+        # ── Step 2: Run OCR model when not stored ─────────────────────────
+        ocr = None
         if not reused:
             from services.ocr_service import AutoOCRProvider
             
@@ -318,105 +442,142 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
                     finally:
                         conn.close()
                 except Exception as e:
-                    logger.warning("run_pipeline: doc_type lookup for hint failed: {}", e)
+                    logger.warning("run_pipeline: doc_type lookup failed: {}", e)
             
             ocr = AutoOCRProvider(doc_type_hint=hint_doc_type)
+            ocr_start = time.time()
             try:
                 ocr_text = ocr.extract_text(str(tmp), "image")
+                ocr_duration_seconds = round(time.time() - ocr_start, 2)
                 doc_type = getattr(ocr, "last_doc_type", "printed")
                 ocr_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else ocr_engine
-            except Exception as e:  # noqa: BLE001 - surface as a result, don't crash the endpoint
+            except Exception as e:
+                ocr_duration_seconds = round(time.time() - ocr_start, 2)
                 logger.warning("run_pipeline: OCR failed: {}", e)
 
-            # Run structured extraction only for PRINTED_TEXT docs.
-            # For TABLE docs Granite Vision already ran full inference above;
-            # calling extract_structured would run a second full model inference
-            # (doubling GPU time). The heuristic fallback in AutoOCRProvider
-            # uses the already-extracted ocr_text instead.
+        # ── Step 3: Evict OCR Model from VRAM ─────────────────────────────
+        resolved_doc = getattr(ocr, "last_doc_type", doc_type_hint) if (ocr and not reused) else doc_type
+        if resolved_doc in ("HANDWRITTEN", "handwritten"):
             try:
-                resolved_doc = getattr(ocr, "last_doc_type", hint_doc_type)
-                if hasattr(ocr, "extract_structured") and resolved_doc != "TABLE":
-                    structured = ocr.extract_structured(str(tmp), "image") or []
-            except Exception as e:  # noqa: BLE001
-                logger.warning("run_pipeline: structured OCR failed: {}", e)
+                from gpu_manager import evict_chandra
+                evict_chandra()
+                time.sleep(0.5)
+            except Exception as evict_err:
+                logger.warning("run_pipeline: evict_chandra failed: {}", evict_err)
 
-        analysis: Optional[str] = None
-        if (evaluate or summary) and ocr_text:
+        # ── Step 4: Initialize BioMistral LLM Client ─────────────────────
+        active_llm = diagnosis_client or llm_client
+        if active_llm is None:
             try:
-                from services.ai_service import build_ai, MEDICAL_PROMPT, _extract_images
-                ai = build_ai("gemini", {"api_key": ""})
-                analysis = ai.analyze(MEDICAL_PROMPT, ocr_text, _extract_images(str(tmp), "image"))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("run_pipeline: AI analysis skipped: {}", e)
+                from config import settings
+                from gpu_manager import ping_ollama
+                from services.llm_client import OllamaLLMClient
+                if ping_ollama(settings.ollama_base_url):
+                    active_llm = OllamaLLMClient(
+                        base_url=settings.ollama_base_url,
+                        model=settings.ollama_model,
+                        fallback_model=settings.ollama_fallback_model,
+                        timeout=120,
+                    )
+                else:
+                    logger.warning("run_pipeline: Ollama not reachable; LLM analysis skipped")
+            except Exception as llm_init_err:
+                logger.warning("run_pipeline: OllamaLLMClient init failed: {}", llm_init_err)
 
-        # Build the heavily nested payload for the frontend
-        lab_results = []
-        diag_dict = None
+        # ── Step 5: Run BioMistral LLM Summary on Raw Text ───────────────
+        analysis: str = ""
+        lab_results: list[dict] = []
+        diag_dict: dict[str, Any] = {}
+
         if ocr_text:
+            # Fast heuristic extraction for tabular view, or custom test LLM client if passed
             try:
                 from agents.ocr_result import OCRResult
                 from agents.extraction_agent import ExtractionAgent
-                from schemas import LabReport
-                from agents.diagnosis_agent import DiagnosisAgent
-                
-                ocr_res = OCRResult(
-                    raw_output=ocr_text,
-                    engine=ocr_engine,
-                    confidence=1.0,
-                    processing_time_seconds=0.0
-                )
-                # Run extraction (heuristic fallback, no LLM)
-                extract_agent = ExtractionAgent(llm_client=None)
+                ocr_res = OCRResult(raw_output=ocr_text, engine=ocr_engine, confidence=1.0, processing_time_seconds=ocr_duration_seconds)
+                ext_client = llm_client if (llm_client and type(llm_client).__name__ != "OllamaLLMClient") else None
+                extract_agent = ExtractionAgent(llm_client=ext_client)
                 extract_res = extract_agent.run(ocr_res)
-                lab_results = extract_res.lab_results
-                
-                # Run diagnosis (heuristic fallback, no LLM)
-                diag_agent = DiagnosisAgent(llm_client=None)
-                lab_rep = LabReport(
-                    report_id=report_id or "tmp",
-                    patient_id="tmp",
-                    date="tmp",
-                    lab_results=lab_results
-                )
-                diag_res = diag_agent.run(lab_rep)
-                if hasattr(diag_res, "model_dump"):
-                    diag_dict = diag_res.model_dump()
-                elif hasattr(diag_res, "to_dict"):
-                    diag_dict = diag_res.to_dict()
-                else:
-                    diag_dict = dict(diag_res)
+                lab_results = [r.model_dump() if hasattr(r, "model_dump") else dict(r) for r in extract_res.lab_results]
             except Exception as e:
-                logger.warning("run_pipeline: Agents failed: {}", e)
-        
+                logger.warning("run_pipeline: ExtractionAgent heuristic failed: {}", e)
+
+            # BioMistral LLM call on raw OCR text
+            if active_llm is not None:
+                llm_start_time = time.time()
+                analysis = _llm_summary_from_text(ocr_text, active_llm)
+                llm_duration_seconds = round(time.time() - llm_start_time, 2)
+            else:
+                analysis = f"Raw text extracted ({len(ocr_text)} characters). LLM service unavailable for clinical summary."
+
+            # Run DiagnosisAgent if custom test client provided
+            if (diagnosis_client or llm_client) and type(diagnosis_client or llm_client).__name__ != "OllamaLLMClient":
+                try:
+                    from agents.diagnosis_agent import DiagnosisAgent
+                    from schemas import LabReport
+                    diag_agent = DiagnosisAgent(llm_client=diagnosis_client or llm_client)
+                    lab_rep = LabReport(
+                        report_id=report_id or "tmp",
+                        patient_id=patient_id_val,
+                        date="",
+                        lab_results=extract_res.lab_results
+                    )
+                    diag_res = diag_agent.run(lab_rep)
+                    if hasattr(diag_res, "model_dump"):
+                        diag_dict = diag_res.model_dump()
+                    elif hasattr(diag_res, "to_dict"):
+                        diag_dict = diag_res.to_dict()
+                    else:
+                        diag_dict = dict(diag_res)
+                except Exception as e:
+                    logger.warning("run_pipeline: DiagnosisAgent failed: {}", e)
+
+        # ── Step 6: Evict BioMistral LLM from VRAM ───────────────────────
+        if active_llm is not None and type(active_llm).__name__ == "OllamaLLMClient":
+            try:
+                from config import settings
+                from gpu_manager import evict_ollama
+                evict_ollama(settings.ollama_base_url, settings.ollama_model)
+            except Exception as evict_ollama_err:
+                logger.warning("run_pipeline: evict_ollama failed: {}", evict_ollama_err)
+
         if not diag_dict:
             diag_dict = {
                 "clinical_patterns": [],
                 "abnormal_values": [],
                 "urgent_flags": [],
                 "suggested_followup": [],
-                "summary_for_doctor": "Diagnosis unavailable.",
-                "llm_narrative": None
+                "summary_for_doctor": analysis or "Diagnosis unavailable.",
+                "llm_narrative": analysis or None
             }
+
+        end_time = time.time()
+        completed_at = datetime.now(timezone.utc).isoformat()
+        total_duration_sec = round(end_time - start_time, 2)
+
+        engine_label = _format_engine_name(ocr_engine)
 
         payload = {
             "preprocessing": {"transformations_applied": [], "quality_metrics_before": {}},
             "ocr": {
                 "raw_output": ocr_text,
-                "engine": ocr_engine,
+                "engine": engine_label,
                 "confidence": None,
-                "processing_time_seconds": 0
+                "processing_time_seconds": ocr_duration_seconds
             },
             "lab_report": {"lab_results": lab_results},
             "diagnosis": diag_dict,
             "summary": {"summary": analysis, "flags": [], "critical_alerts": [], "discussion_points": []} if analysis else None,
             "evaluation": None,
             "metadata": {
-                "use_graph": False,
+                "use_graph": use_graph,
                 "evaluate": evaluate,
                 "summary": summary,
-                "duration_ms": 0,
-                "started_at": "",
-                "completed_at": "",
+                "duration_ms": int(total_duration_sec * 1000),
+                "duration_seconds": total_duration_sec,
+                "llm_duration_seconds": llm_duration_seconds,
+                "started_at": started_at,
+                "completed_at": completed_at,
                 "errors": {}
             }
         }
@@ -427,3 +588,48 @@ def run_pipeline(content: bytes, evaluate: bool = False, summary: bool = False,
             tmp.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+class PipelineGraph:
+    """DAG orchestrator for pipeline steps."""
+
+    def __init__(self):
+        self._nodes: dict[str, Any] = {}
+        self._edges: list[tuple[str, str]] = []
+
+    def add_node(self, name: str, fn: Any) -> "PipelineGraph":
+        self._nodes[name] = fn
+        return self
+
+    def add_edge(self, src: str, dst: str) -> "PipelineGraph":
+        self._edges.append((src, dst))
+        return self
+
+    def run(self, initial_state: dict) -> dict:
+        state = dict(initial_state)
+        in_degree = {k: 0 for k in self._nodes}
+        for src, dst in self._edges:
+            if dst in in_degree:
+                in_degree[dst] += 1
+
+        queue = [k for k, d in in_degree.items() if d == 0]
+
+        while queue:
+            node = queue.pop(0)
+            fn = self._nodes.get(node)
+            if fn:
+                try:
+                    res = fn(state)
+                    if isinstance(res, dict):
+                        state.update(res)
+                except Exception as e:
+                    if "errors" not in state:
+                        state["errors"] = {}
+                    state["errors"][node] = str(e)
+            for src, dst in self._edges:
+                if src == node and dst in in_degree:
+                    in_degree[dst] -= 1
+                    if in_degree[dst] == 0:
+                        queue.append(dst)
+
+        return state

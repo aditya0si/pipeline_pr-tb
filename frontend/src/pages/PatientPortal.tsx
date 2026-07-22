@@ -25,6 +25,7 @@ export function PatientPortal({ onBack, notify }: Props) {
   }, [loadReports]);
 
   const handleUpload = useCallback(async (file: File, docType: string) => {
+    if (uploading) return;
     setUploading(true);
     setProgress(0);
     setPendingFile(null);
@@ -33,15 +34,14 @@ export function PatientPortal({ onBack, notify }: Props) {
       await api.testUploadReport(file, docType);
       setProgress(100);
       notify(`${file.name} uploaded`);
-      loadReports();
+      await loadReports();
     } catch (e: any) {
-      setProgress(0);
-      notify(e.message, "error");
+      notify(e.message || "Upload failed", "error");
     } finally {
       clearInterval(timer);
       setTimeout(() => { setUploading(false); setProgress(0); }, 450);
     }
-  }, [notify, loadReports]);
+  }, [uploading, notify, loadReports]);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -98,20 +98,25 @@ export function PatientPortal({ onBack, notify }: Props) {
         <div className="upload-zone hero" style={{ cursor: "default" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <div style={{ fontWeight: 600 }}>📄 {pendingFile.name}</div>
-            <button className="neu-btn sm" onClick={(e) => { e.stopPropagation(); setPendingFile(null); }}>✕ Cancel</button>
+            <button className="neu-btn sm" disabled={uploading} onClick={(e) => { e.stopPropagation(); setPendingFile(null); }}>✕ Cancel</button>
           </div>
           <h4>What type of document is this?</h4>
           <p style={{ marginBottom: 20 }}>Select the format to route it to the best AI model.</p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-            <button className="neu-btn" style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleUpload(pendingFile, "printed"); }}>
+            <button className="neu-btn" disabled={uploading} style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleUpload(pendingFile, "printed"); }}>
               <div style={{ fontSize: 24, marginBottom: 8 }}>🖨️</div>
               <div style={{ fontWeight: 600 }}>Printed</div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Typed text</div>
             </button>
-            <button className="neu-btn" style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleUpload(pendingFile, "tabular"); }}>
+            <button className="neu-btn" disabled={uploading} style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleUpload(pendingFile, "tabular"); }}>
               <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
               <div style={{ fontWeight: 600 }}>Tabular</div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Tables / lab panels</div>
+            </button>
+            <button className="neu-btn" disabled={uploading} style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleUpload(pendingFile, "handwritten"); }}>
+              <div style={{ fontSize: 24, marginBottom: 8 }}>✍️</div>
+              <div style={{ fontWeight: 600 }}>Handwritten</div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Prescriptions / notes</div>
             </button>
           </div>
         </div>
@@ -157,16 +162,16 @@ export function PatientPortal({ onBack, notify }: Props) {
               <div className="report-body">
                 <div className="report-title">{r.filename}</div>
                 <div className="report-date">
-                  {new Date(r.shared_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-                  {" · "}
-                  {new Date(r.shared_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                  {r.shared_at ? new Date(r.shared_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                  {r.shared_at ? " · " : ""}
+                  {r.shared_at ? new Date(r.shared_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : ""}
                 </div>
               </div>
               <div className="report-right">
-                <span className={`tag ${r.filetype}`}>{r.filetype}</span>
+                <span className={`tag ${["pdf", "image"].includes(r.filetype) ? r.filetype : ""}`}>{r.filetype}</span>
                 {r.analyzed ? <span className="tag analyzed">Analyzed</span> : <span className="tag uploaded">Uploaded</span>}
-                <a href={api.fileUrl(r.id)} target="_blank" rel="noopener">
-                  <button className="neu-btn sm">View</button>
+                <a href={api.fileUrl(r.id)} target="_blank" rel="noopener noreferrer" className="neu-btn sm" style={{ textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+                  View
                 </a>
               </div>
             </div>

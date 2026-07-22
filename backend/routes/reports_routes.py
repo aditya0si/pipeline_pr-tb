@@ -15,8 +15,8 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from auth import decode_token
@@ -67,8 +67,8 @@ async def upload_report(
             raise HTTPException(400, f"Only PDF and image files accepted. Got: {ext or 'no extension'}")
             
         # Validate doc_type
-        if doc_type not in {"printed", "tabular"}:
-            raise HTTPException(422, f"Invalid doc_type. Expected 'printed' or 'tabular', got: {doc_type}")
+        if doc_type not in {"printed", "tabular", "handwritten"}:
+            raise HTTPException(422, f"Invalid doc_type. Expected 'printed', 'tabular', or 'handwritten', got: {doc_type}")
         
         # Read and validate file content
         content = await file.read()
@@ -127,22 +127,34 @@ async def upload_report(
 def patient_reports(token: str):
     payload = decode_token(token)
     conn = get_db()
-    rows = conn.execute(
-        "SELECT id, filename, filetype, shared_at, analyzed FROM reports WHERE patient_id=? ORDER BY shared_at DESC",
-        (payload["sub"],),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT id, filename, filetype, shared_at, analyzed FROM reports WHERE patient_id=? ORDER BY shared_at DESC",
+            (payload["sub"],),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 @router.get("/api/file/{report_id}")
-def serve_file(report_id: str):
+def serve_file(report_id: str, token: Optional[str] = Query(None)):
+    if token:
+        try:
+            decode_token(token)
+        except Exception:
+            raise HTTPException(401, "Invalid authentication token")
     conn = get_db()
-    row = conn.execute("SELECT filepath, filename FROM reports WHERE id=?", (report_id,)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute("SELECT filepath, filename FROM reports WHERE id=?", (report_id,)).fetchone()
+    finally:
+        conn.close()
     if not row:
-        raise HTTPException(404, "File not found")
-    return FileResponse(row["filepath"], filename=row["filename"])
+        raise HTTPException(404, "Report not found")
+    p = Path(row["filepath"])
+    if not p.exists():
+        raise HTTPException(404, "File missing from storage")
+    return FileResponse(str(p), filename=row["filename"])
 
 
 @router.post("/api/doctor/analyze")
@@ -173,7 +185,9 @@ def analyze_report(req: AnalyzeReq):
         ocr_text = ocr.extract_text(filepath, filetype)
         doc_type = getattr(ocr, "last_doc_type", "printed")
         structured = ocr.extract_structured(filepath, filetype) if hasattr(ocr, "extract_structured") else []
-        ocr_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else type(ocr).__name__
+        raw_engine = type(ocr.last_provider).__name__ if getattr(ocr, "last_provider", None) else type(ocr).__name__
+        from services.pipeline_service import _format_engine_name
+        ocr_engine = _format_engine_name(raw_engine)
         images = _extract_images(filepath, filetype)
         analysis = ai.analyze(MEDICAL_PROMPT, ocr_text, images)
         conn.execute(
@@ -271,8 +285,8 @@ async def test_upload_report(
             raise HTTPException(400, f"Only PDF and image files accepted. Got: {ext or 'no extension'}")
 
         # Validate doc_type
-        if doc_type not in {"printed", "tabular"}:
-            raise HTTPException(422, f"Invalid doc_type. Expected 'printed' or 'tabular', got: {doc_type}")
+        if doc_type not in {"printed", "tabular", "handwritten"}:
+            raise HTTPException(422, f"Invalid doc_type. Expected 'printed', 'tabular', or 'handwritten', got: {doc_type}")
 
         content = await file.read()
         if len(content) == 0:
@@ -331,3 +345,19 @@ def test_reports():
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@router.get("/api/reports/{report_id}/status")
+def get_report_status(report_id: str):
+    """Return processing status for a report (used by frontend status polling)."""
+    conn = get_db()
+    _migrate_reports_schema(conn)
+    row = conn.execute(
+        "SELECT id, status, ocr_engine, doc_type, duration, error, llm_analysis, llm_engine, llm_duration FROM reports WHERE id=?",
+        (report_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Report not found")
+    return dict(row)
+

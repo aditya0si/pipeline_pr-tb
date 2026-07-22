@@ -78,7 +78,8 @@ const MOCK_FILES: MockFile[] = [
 const ENGINES: OCREngine[] = [
   { id: "paddleocr", name: "PaddleOCR", accuracy: 91, languages: ["en", "zh", "ja", "ko", "de", "fr"], capabilities: ["Table recognition", "Layout analysis", "Lightweight", "Printed (GPU)"] },
   { id: "granite", name: "Granite Vision 4.1", accuracy: 0, languages: ["Multimodal"], capabilities: ["Tabular", "Vision-Language", "GPU"] },
-  { id: "pipeline", name: "MedVault Dual Pipeline", accuracy: 0, languages: ["Auto"], capabilities: ["Printed→PaddleOCR", "Tabular→Granite Vision"] },
+  { id: "chandra", name: "Chandra OCR", accuracy: 0, languages: ["Multimodal"], capabilities: ["Handwritten", "Prescriptions", "GPU (INT4)"] },
+  { id: "pipeline", name: "MedVault Tri-Pipeline", accuracy: 0, languages: ["Auto"], capabilities: ["Printed→PaddleOCR", "Tabular→Granite Vision", "Handwritten→Chandra"] },
 ];
 
 const INITIAL_PIPELINE: PipelineStep[] = [
@@ -179,6 +180,7 @@ export function OCRWorkbench({ onBack, notify }: Props) {
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
 
   const toggleStep = (id: string) => {
+    if (id === "ocr") return;
     setPipeline((prev) =>
       prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s))
     );
@@ -191,18 +193,19 @@ export function OCRWorkbench({ onBack, notify }: Props) {
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleRealUpload = async (file: File, docType: string) => {
+  const handleRealUpload = useCallback(async (file: File, docType: string) => {
     setUploading(true);
     setPendingFile(null);
     try {
       const res = await api.testUploadReport(file, docType);
-      notify(`Uploaded ${file.name} as ${docType.toUpperCase()} (ID: ${res.report_id.slice(0, 8)})`, "success");
+      const shortId = res?.report_id ? res.report_id.slice(0, 8) : "ok";
+      notify(`Uploaded ${file.name} as ${docType.toUpperCase()} (ID: ${shortId})`, "success");
     } catch (e: any) {
       notify(e.message || "Upload failed", "error");
     } finally {
       setUploading(false);
     }
-  };
+  }, [notify]);
 
   const renderUpload = () => (
     <div>
@@ -242,6 +245,11 @@ export function OCRWorkbench({ onBack, notify }: Props) {
               <div style={{ fontSize: 24, marginBottom: 8 }}>📊</div>
               <div style={{ fontWeight: 600 }}>Tabular</div>
               <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Tables / lab panels (Granite Vision)</div>
+            </button>
+            <button className="neu-btn" style={{ padding: "12px 24px" }} onClick={(e) => { e.stopPropagation(); handleRealUpload(pendingFile, "handwritten"); }}>
+              <div style={{ fontSize: 24, marginBottom: 8 }}>✍️</div>
+              <div style={{ fontWeight: 600 }}>Handwritten</div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Prescriptions / notes (Chandra OCR)</div>
             </button>
           </div>
         </div>
@@ -342,6 +350,7 @@ export function OCRWorkbench({ onBack, notify }: Props) {
     ];
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        {renderEngines()}
         {groups.map((g) => (
           <div key={g.key}>
             <h4 className="section-header">{g.label}</h4>
@@ -360,7 +369,7 @@ export function OCRWorkbench({ onBack, notify }: Props) {
             </div>
           </div>
         ))}
-        <button className="neu-btn" style={{ alignSelf: "flex-start" }} onClick={() => notify("Pipeline saved", "success")}>
+        <button className="neu-btn" style={{ alignSelf: "flex-start" }} onClick={handleSavePipeline}>
           Save Pipeline
         </button>
       </div>
