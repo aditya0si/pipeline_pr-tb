@@ -1,0 +1,3 @@
+"""
+Hepatology Diagnosis Module package.
+"""

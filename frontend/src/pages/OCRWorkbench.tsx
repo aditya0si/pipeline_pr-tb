@@ -178,6 +178,9 @@ export function OCRWorkbench({ onBack, notify }: Props) {
   const [tab, setTab] = useState<Tab>("upload");
   const [pipeline, setPipeline] = useState<PipelineStep[]>(INITIAL_PIPELINE);
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
+  const [ocrViewMode, setOcrViewMode] = useState<"tokens" | "raw" | "table">("tokens");
+  const [ocrFilter, setOcrFilter] = useState("");
+
 
   const toggleStep = (id: string) => {
     if (id === "ocr") return;
@@ -376,41 +379,130 @@ export function OCRWorkbench({ onBack, notify }: Props) {
     );
   };
 
-  const renderResults = () => (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-      {/* Document side */}
-      <div className="neu" style={{ padding: 12, position: "relative", minHeight: 280 }}>
-        <h4 className="section-header" style={{ marginTop: 0 }}>Original Document</h4>
-        <svg viewBox="0 0 320 220" style={{ width: "100%", background: "#f8f8f8", borderRadius: 6 }}>
-          <rect width="320" height="220" fill="#f1f5f9" />
-          <text x="160" y="20" textAnchor="middle" fontSize="11" fill="#64748b">Lab Report — Mock Preview</text>
-          {MOCK_WORDS.map((w, i) => (
-            <g key={i}>
-              <rect x={w.x} y={w.y} width={w.w} height={w.h} fill="none" stroke={confidenceColor(w.confidence)} strokeWidth="1.5" rx="2" opacity="0.7" />
-              <text x={w.x + 2} y={w.y + 13} fontSize="11" fill="#1e293b">{w.text}</text>
-            </g>
-          ))}
-        </svg>
-      </div>
+  const renderResults = () => {
+    const filteredWords = MOCK_WORDS.filter((w) =>
+      ocrFilter ? w.text.toLowerCase().includes(ocrFilter.toLowerCase()) : true
+    );
+    const avgConfidence = Math.round(
+      MOCK_WORDS.reduce((acc, w) => acc + w.confidence, 0) / MOCK_WORDS.length
+    );
 
-      {/* Extracted text side */}
-      <div className="neu" style={{ padding: 12 }}>
-        <h4 className="section-header" style={{ marginTop: 0 }}>Extracted Text</h4>
-        <div style={{ fontFamily: "monospace", fontSize: 13, lineHeight: 1.8 }}>
-          {MOCK_WORDS.map((w, i) => (
-            <span key={i} style={{ background: `${confidenceColor(w.confidence)}22`, color: confidenceColor(w.confidence), padding: "1px 4px", borderRadius: 3, marginRight: 4 }} title={`${w.confidence}%`}>
-              {w.text}
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {/* Document side */}
+        <div className="neu" style={{ padding: 16, position: "relative", minHeight: 320 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h4 className="section-header" style={{ margin: 0 }}>Original Document Preview</h4>
+            <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: "var(--accent-soft)", color: "var(--accent)", fontWeight: 600 }}>
+              Interactive Layout
             </span>
-          ))}
+          </div>
+          <svg viewBox="0 0 320 220" style={{ width: "100%", background: "var(--bg-alt)", borderRadius: 8 }}>
+            <rect width="320" height="220" fill="var(--bg-alt)" />
+            <text x="160" y="20" textAnchor="middle" fontSize="11" fill="var(--text-muted)">Lab Report — Mock Bounding Boxes</text>
+            {filteredWords.map((w, i) => (
+              <g key={i}>
+                <rect x={w.x} y={w.y} width={w.w} height={w.h} fill="none" stroke={confidenceColor(w.confidence)} strokeWidth="1.5" rx="2" opacity="0.85" />
+                <text x={w.x + 2} y={w.y + 13} fontSize="11" fill="var(--text)">{w.text}</text>
+              </g>
+            ))}
+          </svg>
+          <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+            <span>Bounding boxes rendered from OCR coordinates</span>
+            <span>{MOCK_WORDS.length} detected tokens</span>
+          </div>
         </div>
-        <div style={{ marginTop: 16, display: "flex", gap: 12, fontSize: 12 }}>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: "#22c55e", marginRight: 4 }} />&ge;90%</span>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: "#eab308", marginRight: 4 }} />70-90%</span>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: "#ef4444", marginRight: 4 }} />&lt;70%</span>
+
+        {/* Extracted text side */}
+        <div className="neu" style={{ padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h4 className="section-header" style={{ margin: 0 }}>Extracted Output</h4>
+            <div style={{ display: "flex", gap: 4 }}>
+              {(["tokens", "raw", "table"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  className={`neu-btn sm ${ocrViewMode === mode ? "primary" : "ghost"}`}
+                  onClick={() => setOcrViewMode(mode)}
+                  style={{ textTransform: "capitalize", padding: "4px 10px", fontSize: 11 }}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Search bar */}
+          <div style={{ marginBottom: 12 }}>
+            <input
+              className="neu-input"
+              placeholder="🔍 Search tokens in OCR text..."
+              value={ocrFilter}
+              onChange={(e) => setOcrFilter(e.target.value)}
+              style={{ padding: "8px 12px", fontSize: 12 }}
+            />
+          </div>
+
+          {/* Render modes */}
+          {ocrViewMode === "tokens" && (
+            <div>
+              <div className="ocr-tokens-wrap" style={{ minHeight: 160 }}>
+                {filteredWords.map((w, i) => {
+                  const cls = w.confidence >= 90 ? "high" : w.confidence >= 70 ? "med" : "low";
+                  return (
+                    <span key={i} className={`ocr-token ${cls}`} title={`Confidence: ${w.confidence}% (x:${w.x}, y:${w.y})`}>
+                      {w.text}
+                    </span>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 12 }}>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <span><span className="ocr-token high" style={{ padding: "1px 5px" }}>&ge;90%</span></span>
+                  <span><span className="ocr-token med" style={{ padding: "1px 5px" }}>70-90%</span></span>
+                  <span><span className="ocr-token low" style={{ padding: "1px 5px" }}>&lt;70%</span></span>
+                </div>
+                <span style={{ fontWeight: 600, color: "var(--accent)" }}>Avg Score: {avgConfidence}%</span>
+              </div>
+            </div>
+          )}
+
+          {ocrViewMode === "raw" && (
+            <pre style={{ padding: 12, background: "var(--bg-alt)", borderRadius: 6, fontSize: 12, overflowX: "auto", maxHeight: 220 }}>
+              {filteredWords.map((w) => w.text).join(" ")}
+            </pre>
+          )}
+
+          {ocrViewMode === "table" && (
+            <div style={{ overflowX: "auto" }}>
+              <table className="lab-table" style={{ width: "100%", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th>Token Text</th>
+                    <th>Confidence</th>
+                    <th>Coordinates (x, y)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredWords.map((w, i) => (
+                    <tr key={i}>
+                      <td style={{ fontWeight: 600 }}>{w.text}</td>
+                      <td>
+                        <span className={`ocr-token ${w.confidence >= 90 ? "high" : w.confidence >= 70 ? "med" : "low"}`}>
+                          {w.confidence}%
+                        </span>
+                      </td>
+                      <td style={{ color: "var(--text-muted)" }}>{w.x}, {w.y} ({w.w}&times;{w.h})</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
+
 
 
 

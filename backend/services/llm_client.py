@@ -28,10 +28,12 @@ class OllamaLLMClient:
         self.fallback_model = fallback_model
         self.timeout = timeout
 
-    def complete(self, prompt: str, input_text: str) -> str:
+    def complete(self, prompt: str, input_text: str = "", input: str = "", **kwargs) -> str:
         """Combine prompt and input_text and send to Ollama /api/generate."""
-        full_prompt = f"{prompt}\n\nINPUT DATA:\n{input_text}"
+        inp = input_text or input or ""
+        full_prompt = f"{prompt}\n\nINPUT DATA:\n{inp}" if inp else prompt
         return self._call(self.model, full_prompt)
+
 
     def _call(self, model_name: str, prompt: str) -> str:
         url = f"{self.base_url}/api/generate"

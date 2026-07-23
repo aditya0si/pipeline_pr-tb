@@ -132,6 +132,14 @@ class DiagnosisAgent:
         if data is None:
             raise ValueError("LLM diagnosis response contained no JSON object")
         try:
+            summary = data.get("summary_for_doctor") or ""
+            if not summary:
+                bullets = [p.get("pattern", "") for p in data.get("clinical_patterns", []) if p.get("pattern")]
+                if bullets:
+                    summary = "Patterns: " + "; ".join(bullets) + "."
+                else:
+                    summary = "Lab evaluation completed."
+
             return DiagnosisResult(
                 clinical_patterns=[
                     ClinicalPattern(**p) for p in data.get("clinical_patterns", [])
@@ -141,11 +149,12 @@ class DiagnosisAgent:
                 ],
                 urgent_flags=list(data.get("urgent_flags", [])),
                 suggested_followup=list(data.get("suggested_followup", [])),
-                summary_for_doctor=data.get("summary_for_doctor", ""),
-                llm_narrative=raw,
+                summary_for_doctor=summary,
+                llm_narrative=summary,
             )
         except Exception as e:
             raise ValueError(f"LLM diagnosis JSON failed validation: {e}")
+
 
     def _format_input(self, lab_report: LabReport) -> str:
         """Render the validated lab results as JSON for the LLM prompt."""

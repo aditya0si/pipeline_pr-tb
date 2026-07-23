@@ -232,11 +232,34 @@ export function LabInterpretation({ onBack, notify }: Props) {
   const [showAI, setShowAI] = useState(false);
   const [customTests, setCustomTests] = useState<LabTest[]>([]);
   const [form, setForm] = useState<CustomTest>({ ...emptyCustom });
+  const [mainTab, setMainTab] = useState<"results" | "timeline" | "trends">("results");
+  const [abnormalOnly, setAbnormalOnly] = useState(false);
 
   const panel = PANELS[selected];
   const insights = AI_INSIGHTS[selected];
   const allTests = [...panel.tests, ...customTests];
   const criticals = allTests.filter(t => getStatus(t).critical);
+
+  const handleExportCSV = () => {
+    const headers = ["Test Name", "Value", "Unit", "Ref Low", "Ref High", "Status"];
+    const rows = allTests.map(t => [
+      t.name,
+      t.value,
+      t.unit,
+      t.refLow,
+      t.refHigh,
+      getStatus(t).label
+    ]);
+    const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].map(e => e.join(",")).join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `${selected}_lab_results.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    notify(`Exported ${selected} lab panel to CSV`, "success");
+  };
 
   const handleAddCustom = () => {
     const { name, value, unit, refLow, refHigh } = form;
@@ -278,8 +301,28 @@ export function LabInterpretation({ onBack, notify }: Props) {
           <h1>Lab Result Interpretation</h1>
           <div className="subtitle">AI-powered analysis of laboratory panels</div>
         </div>
-        <button className="neu-btn" onClick={handlePrint}>Export / Print</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="neu-btn secondary" onClick={handleExportCSV}>Export CSV</button>
+          <button className="neu-btn primary" onClick={handlePrint}>Export / Print</button>
+        </div>
       </div>
+
+      {/* Main View Mode Selector (Results | Timeline | Trends) */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+        {(["results", "timeline", "trends"] as const).map(tab => (
+          <button
+            key={tab}
+            className={`neu-btn ${mainTab === tab ? "primary" : "secondary"}`}
+            onClick={() => setMainTab(tab)}
+            style={{ textTransform: "capitalize", padding: "8px 18px", fontSize: 13 }}
+          >
+            {tab === "results" && "📊 Lab Results"}
+            {tab === "timeline" && "⏱️ Diagnosis Timeline"}
+            {tab === "trends" && "📈 Trend Dashboard"}
+          </button>
+        ))}
+      </div>
+
 
       {/* Panel Selector */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "20px" }}>
@@ -310,105 +353,228 @@ export function LabInterpretation({ onBack, notify }: Props) {
         </div>
       )}
 
-      {/* Results Table */}
-      <div className="neu" style={{ overflowX: "auto", marginBottom: "20px" }}>
-        <table className="vitals-table" style={{ width: "100%" }}>
-          <thead>
-            <tr>
-              <th>Test</th>
-              <th>Value</th>
-              <th>Unit</th>
-              <th>Reference</th>
-              <th>Status</th>
-              <th>Trend</th>
-            </tr>
-          </thead>
-          <tbody>
-            {allTests.map((t, i) => {
-              const s = getStatus(t);
-              return (
-                <tr key={i}>
-                  <td style={{ fontWeight: 600 }}>{t.name}</td>
-                  <td style={{ fontWeight: 700, color: s.label === "Normal" ? "var(--text)" : s.color }}>{t.value}</td>
-                  <td style={{ color: "var(--text-muted, #888)" }}>{t.unit}</td>
-                  <td>{t.refLow} - {t.refHigh === 999 ? "N/A" : t.refHigh}</td>
-                  <td>
-                    <span style={{
-                      display: "inline-flex", alignItems: "center", gap: "6px", padding: "2px 10px",
-                      borderRadius: "20px", fontSize: "0.8rem", fontWeight: 600,
-                      background: s.label === "Normal" ? "var(--success-soft, #f0fff4)" : s.label === "CRITICAL" ? "var(--danger-soft, #fff5f5)" : "var(--warning-soft, #fffaf0)",
-                      color: s.color,
-                    }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color, display: "inline-block" }} />
-                      {s.label}
-                    </span>
-                  </td>
-                  <td><Sparkline data={t.history ?? []} color={s.color} /></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* VIEW MODE: TIMELINE */}
+      {mainTab === "timeline" && (
+        <div className="neu" style={{ padding: 24, marginBottom: 20 }}>
+          <h3 className="section-header" style={{ marginTop: 0 }}>⏱️ Clinical Diagnosis Timeline</h3>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 16 }}>
+            Chronological audit log of lab ingestion, pattern analysis, rule engine differentials, and AI brief generation.
+          </p>
 
-      {/* AI Interpretation */}
-      <button className="neu-btn" onClick={() => setShowAI(!showAI)} style={{ marginBottom: "16px" }}>
-        {showAI ? "Hide AI Analysis" : "Run AI Analysis"}
-      </button>
-
-      {showAI && insights && (
-        <div className="neu" style={{ padding: "20px", marginBottom: "20px" }}>
-          <h3 className="section-header" style={{ fontSize: "1rem", marginBottom: "12px" }}>AI Interpretation</h3>
-
-          <div style={{ marginBottom: "16px" }}>
-            <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--accent, #4a6cf7)" }}>Summary</div>
-            <p style={{ lineHeight: 1.6, margin: 0, color: "var(--text)" }}>{insights.summary}</p>
-          </div>
-
-          {insights.abnormalities.length > 0 && (
-            <div style={{ marginBottom: "16px" }}>
-              <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--warning, #dd6b20)" }}>Flagged Abnormalities</div>
-              <ul style={{ margin: 0, paddingLeft: "20px" }}>
-                {insights.abnormalities.map((a, i) => <li key={i} style={{ marginBottom: "4px", lineHeight: 1.5 }}>{a}</li>)}
-              </ul>
+          <div className="timeline-container">
+            <div className="timeline-item">
+              <div className="timeline-node" />
+              <div className="neu-inset" style={{ padding: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>📥 Lab Document Uploaded</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  Today at 18:05 • Document: lab_report_2026.pdf (PDF • 2.4 MB)
+                </div>
+              </div>
             </div>
-          )}
 
-          <div style={{ marginBottom: "16px" }}>
-            <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--accent, #4a6cf7)" }}>Suggested Follow-up Tests</div>
-            <ul style={{ margin: 0, paddingLeft: "20px" }}>
-              {insights.followUp.map((f, i) => <li key={i} style={{ marginBottom: "4px" }}>{f}</li>)}
-            </ul>
-          </div>
-
-          <div style={{ marginBottom: "16px" }}>
-            <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--text)" }}>Differential Diagnosis</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-              {insights.differentials.map((d, i) => (
-                <span key={i} className="neu" style={{ padding: "4px 12px", borderRadius: "20px", fontSize: "0.85rem" }}>{d}</span>
-              ))}
+            <div className="timeline-item">
+              <div className="timeline-node" />
+              <div className="neu-inset" style={{ padding: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>📄 OCR Engine Processing</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  Engine: PaddleOCR • Duration: 1.42s • 100% Layout confidence
+                </div>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--success, #38a169)" }}>Trend Analysis</div>
-            <p style={{ lineHeight: 1.6, margin: 0 }}>{insights.trend}</p>
+            <div className="timeline-item">
+              <div className="timeline-node" />
+              <div className="neu-inset" style={{ padding: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>🔬 Stage A: Pattern Analysis</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  Pattern Identified: Hepatocellular • De Ritis: 1.08 • R-Factor: 3.20 (Mixed)
+                </div>
+              </div>
+            </div>
+
+            <div className="timeline-item">
+              <div className="timeline-node" />
+              <div className="neu-inset" style={{ padding: 12 }}>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>📊 Stage B: Rule Engine Differentials</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  Matches: NAFLD (82%), DILI (45%), Acute Liver Failure (15% - Urgent)
+                </div>
+              </div>
+            </div>
+
+            <div className="timeline-item">
+              <div className="timeline-node active" />
+              <div className="neu-inset" style={{ padding: 12, borderLeft: "3px solid #10b981" }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#10b981" }}>🧠 Stage C & D: BioMistral Brief & MELD Scores</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  MELD Score: 18 (~6% 90-day mortality) • Child-Pugh: Class A • FIB-4: 1.42 (Low risk)
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Add Custom Test */}
-      <div className="neu" style={{ padding: "20px", marginBottom: "20px" }}>
-        <h3 className="section-header" style={{ fontSize: "1rem", marginBottom: "12px" }}>Add Custom Test Result</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "10px", marginBottom: "12px" }}>
-          <input className="neu-input" placeholder="Test name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-          <input className="neu-input" placeholder="Value" type="number" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
-          <input className="neu-input" placeholder="Unit" value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} />
-          <input className="neu-input" placeholder="Ref Low" type="number" value={form.refLow} onChange={e => setForm({ ...form, refLow: e.target.value })} />
-          <input className="neu-input" placeholder="Ref High" type="number" value={form.refHigh} onChange={e => setForm({ ...form, refHigh: e.target.value })} />
+      {/* VIEW MODE: TRENDS DASHBOARD */}
+      {mainTab === "trends" && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h3 className="section-header" style={{ margin: 0 }}>📈 Sparkline Trend Dashboard</h3>
+            <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={abnormalOnly}
+                onChange={e => setAbnormalOnly(e.target.checked)}
+              />
+              Show Abnormal Only
+            </label>
+          </div>
+
+          <div className="trend-card-grid">
+            {allTests
+              .filter(t => (abnormalOnly ? getStatus(t).label !== "Normal" : true))
+              .map((t, idx) => {
+                const s = getStatus(t);
+                const firstVal = t.history ? t.history[0] : t.value;
+                const delta = Number((t.value - firstVal).toFixed(1));
+                const deltaCls = delta > 0 ? "up" : delta < 0 ? "down" : "neutral";
+
+                return (
+                  <div key={idx} className="trend-card neu">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 14 }}>{t.name}</div>
+                        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t.unit}</div>
+                      </div>
+                      <span className={`trend-delta ${deltaCls}`}>
+                        {delta > 0 ? `+${delta}` : delta}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 4 }}>
+                      <span style={{ fontSize: 22, fontWeight: 800, color: s.label === "Normal" ? "var(--text)" : s.color }}>
+                        {t.value}
+                      </span>
+                      <span style={{ fontSize: 11, color: s.color, fontWeight: 600 }}>
+                        {s.label}
+                      </span>
+                    </div>
+
+                    <div style={{ marginTop: 8 }}>
+                      <Sparkline data={t.history ?? [t.value, t.value]} color={s.color} />
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
         </div>
-        <button className="neu-btn" onClick={handleAddCustom}>Add Test</button>
-      </div>
+      )}
+
+      {/* VIEW MODE: RESULTS TABLE */}
+      {mainTab === "results" && (
+        <>
+          {/* Results Table */}
+          <div className="neu" style={{ overflowX: "auto", marginBottom: "20px" }}>
+            <table className="vitals-table" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Test</th>
+                  <th>Value</th>
+                  <th>Unit</th>
+                  <th>Reference</th>
+                  <th>Status</th>
+                  <th>Trend</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allTests.map((t, i) => {
+                  const s = getStatus(t);
+                  return (
+                    <tr key={i}>
+                      <td style={{ fontWeight: 600 }}>{t.name}</td>
+                      <td style={{ fontWeight: 700, color: s.label === "Normal" ? "var(--text)" : s.color }}>{t.value}</td>
+                      <td style={{ color: "var(--text-muted, #888)" }}>{t.unit}</td>
+                      <td>{t.refLow} - {t.refHigh === 999 ? "N/A" : t.refHigh}</td>
+                      <td>
+                        <span style={{
+                          display: "inline-flex", alignItems: "center", gap: "6px", padding: "2px 10px",
+                          borderRadius: "20px", fontSize: "0.8rem", fontWeight: 600,
+                          background: s.label === "Normal" ? "var(--success-soft, #f0fff4)" : s.label === "CRITICAL" ? "var(--danger-soft, #fff5f5)" : "var(--warning-soft, #fffaf0)",
+                          color: s.color,
+                        }}>
+                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color, display: "inline-block" }} />
+                          {s.label}
+                        </span>
+                      </td>
+                      <td><Sparkline data={t.history ?? []} color={s.color} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* AI Interpretation */}
+          <button className="neu-btn" onClick={() => setShowAI(!showAI)} style={{ marginBottom: "16px" }}>
+            {showAI ? "Hide AI Analysis" : "Run AI Analysis"}
+          </button>
+
+          {showAI && insights && (
+            <div className="neu" style={{ padding: "20px", marginBottom: "20px" }}>
+              <h3 className="section-header" style={{ fontSize: "1rem", marginBottom: "12px" }}>AI Interpretation</h3>
+
+              <div style={{ marginBottom: "16px" }}>
+                <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--accent, #4a6cf7)" }}>Summary</div>
+                <p style={{ lineHeight: 1.6, margin: 0, color: "var(--text)" }}>{insights.summary}</p>
+              </div>
+
+              {insights.abnormalities.length > 0 && (
+                <div style={{ marginBottom: "16px" }}>
+                  <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--warning, #dd6b20)" }}>Flagged Abnormalities</div>
+                  <ul style={{ margin: 0, paddingLeft: "20px" }}>
+                    {insights.abnormalities.map((a, i) => <li key={i} style={{ marginBottom: "4px", lineHeight: 1.5 }}>{a}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              <div style={{ marginBottom: "16px" }}>
+                <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--accent, #4a6cf7)" }}>Suggested Follow-up Tests</div>
+                <ul style={{ margin: 0, paddingLeft: "20px" }}>
+                  {insights.followUp.map((f, i) => <li key={i} style={{ marginBottom: "4px" }}>{f}</li>)}
+                </ul>
+              </div>
+
+              <div style={{ marginBottom: "16px" }}>
+                <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--text)" }}>Differential Diagnosis</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                  {insights.differentials.map((d, i) => (
+                    <span key={i} className="neu" style={{ padding: "4px 12px", borderRadius: "20px", fontSize: "0.85rem" }}>{d}</span>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: "6px", color: "var(--success, #38a169)" }}>Trend Analysis</div>
+                <p style={{ lineHeight: 1.6, margin: 0 }}>{insights.trend}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Add Custom Test */}
+          <div className="neu" style={{ padding: "20px", marginBottom: "20px" }}>
+            <h3 className="section-header" style={{ fontSize: "1rem", marginBottom: "12px" }}>Add Custom Test Result</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "10px", marginBottom: "12px" }}>
+              <input className="neu-input" placeholder="Test name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+              <input className="neu-input" placeholder="Value" type="number" value={form.value} onChange={e => setForm({ ...form, value: e.target.value })} />
+              <input className="neu-input" placeholder="Unit" value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} />
+              <input className="neu-input" placeholder="Ref Low" type="number" value={form.refLow} onChange={e => setForm({ ...form, refLow: e.target.value })} />
+              <input className="neu-input" placeholder="Ref High" type="number" value={form.refHigh} onChange={e => setForm({ ...form, refHigh: e.target.value })} />
+            </div>
+            <button className="neu-btn" onClick={handleAddCustom}>Add Test</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
+

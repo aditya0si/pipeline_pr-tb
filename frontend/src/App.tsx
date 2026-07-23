@@ -21,6 +21,8 @@ import { LabInterpretation } from "./pages/LabInterpretation";
 import { ResearchPipeline } from "./pages/ResearchPipeline";
 import { OCRWorkbench } from "./pages/OCRWorkbench";
 
+import { CommandPalette } from "./components/CommandPalette";
+
 type View = "pick" | "patient" | "doctor" | "settings" | "dashboard" | "patient-chart" | "drug-interactions" | "messages" | "audit-log" | "analytics" | "consent-forms" | "education" | "imaging" | "telemedicine" | "rx-refills" | "genomics" | "clinical-trials" | "vitals-monitor" | "lab-interpret" | "research" | "ocr-workbench";
 
 interface Toast {
@@ -37,11 +39,23 @@ export function App() {
   const [viewData, setViewData] = useState<any>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [dark, setDark] = useState(() => localStorage.getItem("medvault_theme") === "dark");
+  const [cmdOpen, setCmdOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     localStorage.setItem("medvault_theme", dark ? "dark" : "light");
   }, [dark]);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdOpen(prev => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, []);
 
   const notify = useCallback((msg: string, type: "success" | "error" = "success") => {
     const id = ++toastId;
@@ -75,6 +89,9 @@ export function App() {
           <span>MedVault</span>
         </div>
         <div className="topbar-actions">
+          <button className="neu-btn sm secondary" onClick={() => setCmdOpen(true)} title="Quick Command Palette (Ctrl+K)">
+            🔍 <span style={{ opacity: 0.8, fontSize: 11 }}>Ctrl+K</span>
+          </button>
           {view !== "pick" && (
             <>
               <button className="neu-btn sm ghost" onClick={() => setView("pick")}>Home</button>
@@ -94,6 +111,9 @@ export function App() {
             {dark ? "☀️" : "🌙"}
           </button>
         </div>
+
+        <CommandPalette isOpen={cmdOpen} onClose={() => setCmdOpen(false)} onSelect={navigate} />
+
 
       </nav>
       <main className="main-content" id="main-content" role="main">

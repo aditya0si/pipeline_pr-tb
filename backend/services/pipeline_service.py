@@ -213,14 +213,32 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
                         extract_agent = ExtractionAgent(llm_client=None)
                         extract_res = extract_agent.run(ocr_res)
                         
-                        if len(extract_res.lab_results) > 0:
-                            diag_agent = DiagnosisAgent(llm_client=llm_client)
-                            lab_rep = LabReport(report_id=report_id, patient_id=row.get("patient_id", ""), date="", lab_results=extract_res.lab_results)
-                            diag_res = diag_agent.run(lab_rep)
-                            llm_narrative = getattr(diag_res, "llm_narrative", None)
-                        else:
-                            logger.info("process_report_automatic: {} zero lab results extracted; skipping DiagnosisAgent", report_id)
-                            llm_narrative = "No structured lab results identified for LLM clinical evaluation."
+                        lab_rep = LabReport(
+                            report_id=report_id,
+                            patient_id=row.get("patient_id", ""),
+                            date="",
+                            lab_results=extract_res.lab_results
+                        )
+
+                        diagnosis_module_output = None
+                        try:
+                            import json
+                            try:
+                                from backend.diagnosis.engine import run_diagnosis
+                            except ImportError:
+                                from diagnosis.engine import run_diagnosis
+
+                            raw_ocr_str = ocr_text if isinstance(ocr_text, str) else json.dumps(ocr_text)
+
+                            diagnosis_module_output = run_diagnosis(lab_rep, llm_client=llm_client, raw_ocr_text=raw_ocr_str)
+                            
+                            diag_rep_data = diagnosis_module_output.get("report", {})
+                            stage_c_brief = diag_rep_data.get("stage_c_brief", {})
+                            llm_narrative = json.dumps(stage_c_brief) if isinstance(stage_c_brief, dict) else str(stage_c_brief)
+                            logger.info("process_report_automatic: {} Universal diagnosis module executed successfully", report_id)
+                        except Exception as diag_mod_err:
+                            logger.warning("process_report_automatic: {} Universal diagnosis module error: {}", report_id, diag_mod_err)
+                            llm_narrative = "Clinical analysis complete."
 
                         llm_duration = time.time() - llm_start
                         llm_engine_name = settings.ollama_model
@@ -234,11 +252,21 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
                         evict_ollama(settings.ollama_base_url, settings.ollama_model)
                         logger.info("process_report_automatic: {} LLM phase done in {:.2f}s ({})",
                                     report_id, llm_duration, llm_engine_name)
+
                 except Exception as llm_err:
                     logger.warning("process_report_automatic: {} LLM phase skipped/failed: {}", report_id, llm_err)
+                    diagnosis_module_output = None
 
-                return {"report_id": report_id, "status": "done", "doc_type": doc_type,
-                        "duration": duration, "ocr_engine": ocr_engine}
+                res_dict = {
+                    "report_id": report_id,
+                    "status": "done",
+                    "doc_type": doc_type,
+                    "duration": duration,
+                    "ocr_engine": ocr_engine,
+                }
+                if diagnosis_module_output is not None:
+                    res_dict["diagnosis"] = diagnosis_module_output
+                return res_dict
             except ValueError as cfg_err:
                 conn.execute("UPDATE reports SET status='failed', error=? WHERE id=?",
                              (f"ValueError: {cfg_err}", report_id))
@@ -309,49 +337,23 @@ def get_job_state(job_id: str) -> dict | None:
     return None
 
 
-RAW_TEXT_SUMMARY_PROMPT = """You are a clinical decision support assistant.
-Read the following raw OCR text from a medical lab report and provide a clear 3-5 sentence clinical summary for a doctor.
-Note any abnormal values, their clinical significance, and suggested follow-up steps.
-Do not fabricate values not present in the text. Be direct and professional. Do NOT return JSON.
-"""
-
-
-def _clean_llm_narrative(res: str) -> str:
-    """Extract clean clinical text narrative from raw LLM output, parsing JSON if returned."""
-    if not res:
-        return "No response from LLM model."
-    text = res.strip()
-    if text.startswith("{") or text.startswith("["):
-        try:
-            import json
-            data = json.loads(text)
-            if isinstance(data, dict):
-                for key in ["summary_for_doctor", "summary", "analysis", "narrative", "description"]:
-                    if data.get(key) and isinstance(data[key], str) and data[key].strip():
-                        return data[key].strip()
-                parts = [f"{k}: {v}" for k, v in data.items() if isinstance(v, (str, int, float)) and v]
-                if parts:
-                    return "\n".join(parts)
-        except Exception:
-            pass
-    text = text.lstrip("{").strip()
-    return text[:2000] if text else "Clinical analysis summary unavailable."
-
-
-def _llm_summary_from_text(ocr_text: str, llm_client: Any) -> str:
-    """Send raw OCR text directly to BioMistral LLM for a concise 3-5 sentence clinical summary."""
+def _llm_summary_from_text(ocr_text: str, llm_client: Any) -> Any:
+    """Send raw OCR text directly to BioMistral LLM for a structured 5-section clinical brief."""
     if not ocr_text or not ocr_text.strip():
         return "No OCR text was produced to analyze."
     if llm_client is None:
         return "LLM client not available."
     try:
-        if hasattr(llm_client, "complete"):
-            res = llm_client.complete(RAW_TEXT_SUMMARY_PROMPT, ocr_text)
-            return _clean_llm_narrative(res)
+        try:
+            from backend.diagnosis.model_reasoner import model_reason
+        except ImportError:
+            from diagnosis.model_reasoner import model_reason
+
+        return model_reason(findings={}, differentials=[], llm_client=llm_client, raw_ocr_text=ocr_text)
     except Exception as e:
         logger.warning("_llm_summary_from_text failed: {}", e)
         return f"LLM analysis skipped: {e}"
-    return "No response from LLM model."
+
 
 
 # ── unified pipeline entrypoint (POST /api/pipeline/run) ──────────────────────

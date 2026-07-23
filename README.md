@@ -111,3 +111,53 @@ parsing logic works, before you spend NIM credits on a live run.
   context from a previous task, the orchestrator has to explicitly restate
   it in the next task block, same rule as in `orchestrator.md`'s own
   instructions.
+
+---
+
+## Hepatology Diagnosis Module (Stages A → D)
+
+MedVault includes a 4-stage hepatology diagnosis pipeline in `backend/diagnosis/`:
+
+```
+Raw Lab Extraction (LabReport / LabResult)
+               │
+               ▼
+   Stage A: Pattern Analyser & Scoring
+     • Fold-over-ULN, De Ritis (AST/ALT), R-Factor
+     • Synthetic dysfunction & Urgent alerts
+     • MELD, Child-Pugh, FIB-4 scores
+               │
+               ▼
+   Stage B: Rule-Based Differential Engine
+     • 8 target conditions evaluated with match probability
+     • Evidence & recommended confirmatory tests
+               │
+               ▼
+   Stage C: AI Clinical Brief Reasoner (BioMistral)
+     • VRAM eviction hooks (evict_chandra, evict_ollama)
+     • Structured JSON output (flags, tests, patterns, urgent actions)
+     • Rule-based fallback when AI is disabled/unavailable
+               │
+               ▼
+   Stage D: Report & Text Summary Generation
+     • Complete JSON report & physician summary
+     • Mandatory clinical decision support disclaimers
+```
+
+### Environment Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `DIAGNOSIS_MODULE_ENABLED` | `"0"` | Feature flag to enable/disable diagnosis module post extraction (set `"1"` to enable) |
+| `DIAGNOSIS_STAGE_C_ENABLED` | `"1"` | Enables AI clinical brief generation via BioMistral when diagnosis module is on |
+
+### Running Tests & Smoke Test
+
+```bash
+# Run unit & integration tests
+pytest backend/tests/test_diagnosis_stageA.py backend/tests/test_diagnosis_stageB.py backend/tests/test_diagnosis_stageC.py backend/tests/test_diagnosis_e2e.py -v
+
+# Run demo smoke test
+python -u scripts/smoke_test.py
+```
+
