@@ -233,7 +233,9 @@ def process_report_automatic(report_id: str, max_retries: int = 3, doc_type_hint
                             diagnosis_module_output = run_diagnosis(lab_rep, llm_client=llm_client, raw_ocr_text=raw_ocr_str)
                             
                             diag_rep_data = diagnosis_module_output.get("report", {})
-                            stage_c_brief = diag_rep_data.get("stage_c_brief", {})
+                            # generate_report() emits the Stage C brief under "clinical_brief";
+                            # the old "stage_c_brief" key never existed, so this always stored "{}".
+                            stage_c_brief = diag_rep_data.get("clinical_brief", {})
                             llm_narrative = json.dumps(stage_c_brief) if isinstance(stage_c_brief, dict) else str(stage_c_brief)
                             logger.info("process_report_automatic: {} Universal diagnosis module executed successfully", report_id)
                         except Exception as diag_mod_err:

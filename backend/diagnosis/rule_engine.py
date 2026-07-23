@@ -228,7 +228,10 @@ def apply_rules(findings: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "confidence_label": conf_label,
                     "supporting_evidence": supporting,
                     "against_evidence": against,
-                    "recommended_tests": rule["recommended_tests"],
+                    # Copy, don't alias: rule["recommended_tests"] is a module-level
+                    # list on RULE_DEFINITIONS. Embedding it by reference would let any
+                    # downstream mutation leak into every future request.
+                    "recommended_tests": list(rule["recommended_tests"]),
                     "reference": rule["reference"],
                     "urgent": is_urgent,
                 }
